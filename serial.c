@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #define DEFAULT_TIMEOUT_MS 1000
 
@@ -40,6 +41,55 @@ struct iio_context_pdata {
 struct iio_device_pdata {
 	bool opened;
 };
+
+struct p_options {
+	char flag;
+	enum sp_parity parity;
+};
+
+struct f_options {
+	char flag;
+	enum sp_flowcontrol flowcontrol;
+};
+
+static const struct p_options parity_options[] = {
+	{'n', SP_PARITY_NONE},
+	{'o', SP_PARITY_ODD},
+	{'e', SP_PARITY_EVEN},
+	{'m', SP_PARITY_MARK},
+	{'s', SP_PARITY_SPACE},
+	{'\0', SP_PARITY_INVALID},
+};
+
+static const struct f_options flow_options[] = {
+	{'n', SP_FLOWCONTROL_NONE},
+	{'x', SP_FLOWCONTROL_XONXOFF},
+	{'r', SP_FLOWCONTROL_RTSCTS},
+	{'d', SP_FLOWCONTROL_DTRDSR},
+	{'\0', SP_FLOWCONTROL_NONE},
+};
+
+static char flow_char(enum sp_flowcontrol fc)
+{
+	unsigned int i;
+
+	for (i = 0; flow_options[i].flag != '\0'; i++) {
+		if (fc == flow_options[i].flowcontrol)
+			return flow_options[i].flag;
+	}
+	return '\0';
+}
+
+static char parity_char(enum sp_parity pc)
+{
+	unsigned int i;
+
+	for (i = 0; parity_options[i].flag != '\0'; i++) {
+		if (pc == parity_options[i].parity)
+			return parity_options[i].flag;
+	}
+	return '\0';
+}
 
 static inline int libserialport_to_errno(enum sp_return ret)
 {
@@ -194,7 +244,7 @@ static ssize_t serial_write_data(struct iio_context_pdata *pdata,
 	ssize_t ret = (ssize_t) libserialport_to_errno(sp_blocking_write(
 				pdata->port, data, len, pdata->timeout_ms));
 
-	DEBUG("Write returned %li: %s\n", (long) ret, data);
+	IIO_DEBUG("Write returned %li: %s\n", (long) ret, data);
 	return ret;
 }
 
@@ -204,7 +254,7 @@ static ssize_t serial_read_data(struct iio_context_pdata *pdata,
 	ssize_t ret = (ssize_t) libserialport_to_errno(sp_blocking_read_next(
 				pdata->port, buf, len, pdata->timeout_ms));
 
-	DEBUG("Read returned %li: %.*s\n", (long) ret, (int) ret, buf);
+	IIO_DEBUG("Read returned %li: %.*s\n", (long) ret, (int) ret, buf);
 	return ret;
 }
 
@@ -215,18 +265,18 @@ static ssize_t serial_read_line(struct iio_context_pdata *pdata,
 	bool found = false;
 	int ret;
 
-	DEBUG("Readline size 0x%lx\n", (unsigned long) len);
+	IIO_DEBUG("Readline size 0x%lx\n", (unsigned long) len);
 
 	for (i = 0; i < len - 1; i++) {
 		ret = libserialport_to_errno(sp_blocking_read_next(
 					pdata->port, &buf[i], 1,
 					pdata->timeout_ms));
 		if (ret < 0) {
-			ERROR("sp_blocking_read_next returned %i\n", ret);
+			IIO_ERROR("sp_blocking_read_next returned %i\n", ret);
 			return (ssize_t) ret;
 		}
 
-		DEBUG("Character: %c\n", buf[i]);
+		IIO_DEBUG("Character: %c\n", buf[i]);
 
 		if (buf[i] != '\n')
 			found = true;
@@ -314,21 +364,29 @@ static int apply_settings(struct sp_port *port, unsigned int baud_rate,
 }
 
 static struct iio_context * serial_create_context(const char *port_name,
-		unsigned int baud_rate, unsigned int bits,
+		unsigned int baud_rate, unsigned int bits, unsigned int stop,
 		enum sp_parity parity, enum sp_flowcontrol flow)
 {
 	struct sp_port *port;
 	struct iio_context_pdata *pdata;
 	struct iio_context *ctx;
 	char *name, *desc, *description;
-	size_t desc_len;
+	size_t desc_len, uri_len;
 	unsigned int i;
 	int ret;
+	char *uri;
+
+	uri_len = sizeof("serial:,1000000,8n1n") + strnlen(port_name, PATH_MAX);
+	uri = malloc(uri_len);
+	if (!uri) {
+		errno = ENOMEM;
+		return NULL;
+	}
 
 	ret = libserialport_to_errno(sp_get_port_by_name(port_name, &port));
 	if (ret) {
 		errno = -ret;
-		return NULL;
+		goto err_free_uri;
 	}
 
 	ret = libserialport_to_errno(sp_open(port, SP_MODE_READ_WRITE));
@@ -337,7 +395,7 @@ static struct iio_context * serial_create_context(const char *port_name,
 		goto err_free_port;
 	}
 
-	ret = apply_settings(port, baud_rate, bits, 1, parity, flow);
+	ret = apply_settings(port, baud_rate, bits, stop, parity, flow);
 	if (ret) {
 		errno = -ret;
 		goto err_close_port;
@@ -397,9 +455,18 @@ static struct iio_context * serial_create_context(const char *port_name,
 		}
 	}
 
+	iio_snprintf(uri, uri_len, "serial:%s,%u,%u%c%u%c",
+			port_name, baud_rate, bits,
+			parity_char(parity), stop, flow_char(flow));
+	ret = iio_context_add_attr(ctx, "uri", uri);
+	if (ret < 0)
+		goto err_context_destroy;
+	free(uri);
+
 	return ctx;
 
 err_context_destroy:
+	free(uri);
 	iio_context_destroy(ctx);
 	errno = -ret;
 	return NULL;
@@ -416,86 +483,138 @@ err_close_port:
 	sp_close(port);
 err_free_port:
 	sp_free_port(port);
+err_free_uri:
+	free(uri);
 	return NULL;
 }
 
+/* Take string, in "[baud rate],[data bits][parity][stop bits][flow control]"
+ * notation, where:
+ *   - baud_rate    = between 110 - 1,000,000 (default 115200)
+ *   - data bits    = between 5 and 9 (default 8)
+ *   - parity       = one of 'n' none, 'o' odd, 'e' even, 'm' mark, 's' space
+ *                         (default 'n' none)
+ *   - stop bits    = 1 or 2 (default 1)
+ *   - flow control = one of '\0' none, 'x' Xon Xoff, 'r' RTSCTS, 'd' DTRDSR
+ *                         (default '\0' none)
+ *
+ * eg: "115200,8n1x"
+ *     "115200,8n1"
+ *     "115200,8"
+ *     "115200"
+ *     ""
+ */
 static int serial_parse_params(const char *params,
-		unsigned int *baud_rate, unsigned int *bits,
+		unsigned int *baud_rate, unsigned int *bits, unsigned int *stop,
 		enum sp_parity *parity, enum sp_flowcontrol *flow)
 {
-	char *end;
+	char *end, ch;
+	unsigned int i;
 
+	/* Default settings */
+	*baud_rate = 115200;
+	*parity = SP_PARITY_NONE;
+	*bits = 8;
+	*stop = 1;
+	*flow = SP_FLOWCONTROL_NONE;
+
+	if (!params || !params[0])
+		return 0;
+
+	errno = 0;
 	*baud_rate = strtoul(params, &end, 10);
-	if (params == end)
+	if (params == end || errno == ERANGE)
 		return -EINVAL;
 
-	switch (*end) {
-	case '\0':
-		/* Default settings */
-		*bits = 8;
-		*parity = SP_PARITY_NONE;
-		*flow = SP_FLOWCONTROL_NONE;
-		return 0;
-	case 'n':
-		*parity = SP_PARITY_NONE;
-		break;
-	case 'o':
-		*parity = SP_PARITY_ODD;
-		break;
-	case 'e':
-		*parity = SP_PARITY_EVEN;
-		break;
-	case 'm':
-		*parity = SP_PARITY_MARK;
-		break;
-	case 's':
-		*parity = SP_PARITY_SPACE;
-		break;
-	default:
+	/* 110 baud to 1,000,000 baud */
+	if (params == end || *baud_rate < 110 || *baud_rate > 1000001) {
+		IIO_ERROR("Invalid baud rate\n");
 		return -EINVAL;
 	}
 
-	params = (const char *)((uintptr_t) end + 1);
+	if (*end == ',')
+		end++;
 
-	if (!*params) {
-		*bits = 8;
-		*flow = SP_FLOWCONTROL_NONE;
+	if (!*end)
 		return 0;
-	}
 
+	params = (const char *)(end);
+
+	errno = 0;
 	*bits = strtoul(params, &end, 10);
-	if (params == end)
+	if (params == end || *bits > 9 || *bits < 5 || errno == ERANGE) {
+		IIO_ERROR("Invalid number of bits\n");
 		return -EINVAL;
+	}
 
-	switch (*end) {
-	case '\0':
-		*flow = SP_FLOWCONTROL_NONE;
+	if (*end == ',')
+		end++;
+
+	if (*end == '\0')
 		return 0;
-	case 'x':
-		*flow = SP_FLOWCONTROL_XONXOFF;
-		break;
-	case 'r':
-		*flow = SP_FLOWCONTROL_RTSCTS;
-		break;
-	case 'd':
-		*flow = SP_FLOWCONTROL_DTRDSR;
-		break;
-	default:
+	ch = (char)(tolower(*end) & 0xFF);
+	for(i = 0; parity_options[i].flag != '\0'; i++) {
+		if (ch == parity_options[i].flag) {
+			*parity = parity_options[i].parity;
+			break;
+		}
+	}
+	if (parity_options[i].flag == '\0') {
+		IIO_ERROR("Invalid Parity character\n");
+		return -EINVAL;
+	}
+
+	end++;
+	if (*end == ',')
+		end++;
+
+	params = (const char *)(end);
+
+	if (!*params)
+		return 0;
+
+	params = (const char *)(end);
+	if (!*params)
+		return 0;
+
+	errno = 0;
+	*stop = strtoul(params, &end, 10);
+	if (params == end || !*stop || *stop > 2 || errno == ERANGE) {
+		IIO_ERROR("Invalid number of stop bits\n");
+		return -EINVAL;
+	}
+
+	if (*end == ',')
+		end++;
+
+	if (*end == '\0')
+		return 0;
+	ch = (char)(tolower(*end) & 0xFF);
+	for(i = 0; flow_options[i].flag != '\0'; i++) {
+		if (ch == flow_options[i].flag) {
+			*flow = flow_options[i].flowcontrol;
+			break;
+		}
+	}
+	if (flow_options[i].flag == '\0') {
+		IIO_ERROR("Invalid Flow Control character\n");
 		return -EINVAL;
 	}
 
 	/* We should have a '\0' after the flow character */
-	if (end[1])
+	if (end[1]) {
+		IIO_ERROR("Invalid characters after Flow Control flag\n");
 		return -EINVAL;
-	else
-		return 0;
+	}
+
+	return 0;
 }
 
 struct iio_context * serial_create_context_from_uri(const char *uri)
 {
 	struct iio_context *ctx = NULL;
 	char *comma, *uri_dup;
-	unsigned int baud_rate, bits;
+	unsigned int baud_rate, bits, stop;
 	enum sp_parity parity;
 	enum sp_flowcontrol flow;
 	int ret;
@@ -511,17 +630,19 @@ struct iio_context * serial_create_context_from_uri(const char *uri)
 	}
 
 	comma = strchr(uri_dup, ',');
-	if (!comma)
-		goto err_free_dup;
+	if (comma) {
+		*comma = '\0';
+		ret = serial_parse_params((char *)((uintptr_t) comma + 1),
+			&baud_rate, &bits, &stop, &parity, &flow);
+	} else {
+		ret = serial_parse_params(NULL,
+				&baud_rate, &bits, &stop, &parity, &flow);
+	}
 
-	*comma = '\0';
-
-	ret = serial_parse_params((char *)((uintptr_t) comma + 1),
-			&baud_rate, &bits, &parity, &flow);
 	if (ret)
 		goto err_free_dup;
 
-	ctx = serial_create_context(uri_dup, baud_rate, bits, parity, flow);
+	ctx = serial_create_context(uri_dup, baud_rate, bits, stop, parity, flow);
 
 	free(uri_dup);
 	return ctx;
@@ -529,7 +650,7 @@ struct iio_context * serial_create_context_from_uri(const char *uri)
 err_free_dup:
 	free(uri_dup);
 err_bad_uri:
-	ERROR("Bad URI: \'%s\'\n", uri);
+	IIO_ERROR("Bad URI: \'%s\'\n", uri);
 	errno = EINVAL;
 	return NULL;
 }

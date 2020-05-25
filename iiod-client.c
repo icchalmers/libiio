@@ -1,7 +1,7 @@
 /*
  * libiio - Library for interfacing industrial I/O (IIO) devices
  *
- * Copyright (C) 2014-2016 Analog Devices, Inc.
+ * Copyright (C) 2014-2020 Analog Devices, Inc.
  * Author: Paul Cercueil <paul.cercueil@analog.com>
  *
  * This library is free software; you can redistribute it and/or
@@ -43,8 +43,10 @@ static ssize_t iiod_client_read_integer(struct iiod_client *client,
 	do {
 		ret = client->ops->read_line(client->pdata,
 				desc, buf, sizeof(buf));
-		if (ret < 0)
+		if (ret < 0) {
+			IIO_ERROR("READ LINE: %zd\n", ret);
 			return ret;
+		}
 
 		for (i = 0; i < (unsigned int) ret; i++) {
 			if (buf[i] != '\n') {
@@ -58,8 +60,9 @@ static ssize_t iiod_client_read_integer(struct iiod_client *client,
 
 	buf[i] = '\0';
 
+	errno = 0;
 	value = (int) strtol(ptr, &end, 10);
-	if (ptr == end)
+	if (ptr == end || errno == ERANGE)
 		return -EINVAL;
 
 	*val = value;
@@ -167,25 +170,27 @@ int iiod_client_get_version(struct iiod_client *client, void *desc,
 
 	iio_mutex_lock(client->lock);
 
-	ret = ops->write(pdata, desc, "VERSION\r\n", sizeof("VERSION\r\n") - 1);
+	ret = (int) ops->write(pdata, desc, "VERSION\r\n", sizeof("VERSION\r\n") - 1);
 	if (ret < 0) {
 		iio_mutex_unlock(client->lock);
 		return ret;
 	}
 
-	ret = ops->read_line(pdata, desc, buf, sizeof(buf));
+	ret = (int) ops->read_line(pdata, desc, buf, sizeof(buf));
 	iio_mutex_unlock(client->lock);
 
 	if (ret < 0)
 		return ret;
 
+	errno = 0;
 	maj = strtol(ptr, &end, 10);
-	if (ptr == end)
+	if (ptr == end || errno == ERANGE)
 		return -EIO;
 
 	ptr = end + 1;
+	errno = 0;
 	min = strtol(ptr, &end, 10);
-	if (ptr == end)
+	if (ptr == end || errno == ERANGE)
 		return -EIO;
 
 	ptr = end + 1;
@@ -200,7 +205,7 @@ int iiod_client_get_version(struct iiod_client *client, void *desc,
 	if (minor)
 		*minor = (unsigned int) min;
 	if (git_tag)
-		strncpy(git_tag, ptr, 8);
+		iio_strlcpy(git_tag, ptr, 8);
 	return 0;
 }
 
@@ -323,7 +328,7 @@ static int iiod_client_discard(struct iiod_client *client, void *desc,
 
 		ret = iiod_client_read_all(client, desc, buf, read_len);
 		if (ret < 0)
-			return ret;
+			return (int) ret;
 
 		to_discard -= (size_t) ret;
 	} while (to_discard);
@@ -532,17 +537,24 @@ int iiod_client_open_unlocked(struct iiod_client *client, void *desc,
 {
 	char buf[1024], *ptr;
 	size_t i;
+	ssize_t len;
 
-	iio_snprintf(buf, sizeof(buf), "OPEN %s %lu ",
+	len = sizeof(buf);
+	len -= iio_snprintf(buf, len, "OPEN %s %lu ",
 			iio_device_get_id(dev), (unsigned long) samples_count);
 	ptr = buf + strlen(buf);
 
 	for (i = dev->words; i > 0; i--, ptr += 8) {
-		iio_snprintf(ptr, (ptr - buf) + i * 8, "%08" PRIx32,
+		len -= iio_snprintf(ptr, len, "%08" PRIx32,
 				dev->mask[i - 1]);
 	}
 
-	strcpy(ptr, cyclic ? " CYCLIC\r\n" : "\r\n");
+	len -= iio_strlcpy(ptr, cyclic ? " CYCLIC\r\n" : "\r\n", len);
+
+	if (len < 0) {
+		IIO_ERROR("strlength problem in iiod_client_open_unlocked\n");
+		return -ENOMEM;
+	}
 
 	return iiod_client_exec_command(client, desc, buf);
 }
@@ -568,18 +580,19 @@ static int iiod_client_read_mask(struct iiod_client *client,
 		return -ENOMEM;
 
 	ret = iiod_client_read_all(client, desc, buf, words * 8 + 1);
-	if (ret < 0)
+	if (ret < 0) {
+		IIO_ERROR("READ ALL: %zd\n", ret);
 		goto out_buf_free;
-	else
+	} else
 		ret = 0;
 
 	buf[words*8] = '\0';
 
-	DEBUG("Reading mask\n");
+	IIO_DEBUG("Reading mask\n");
 
 	for (i = words, ptr = buf; i > 0; i--) {
-		sscanf(ptr, "%08" PRIx32, &mask[i - 1]);
-		DEBUG("mask[%lu] = 0x%08" PRIx32 "\n",
+		iio_sscanf(ptr, "%08" PRIx32, &mask[i - 1]);
+		IIO_DEBUG("mask[%lu] = 0x%08" PRIx32 "\n",
 				(unsigned long)(i - 1), mask[i - 1]);
 
 		ptr = (char *) ((uintptr_t) ptr + 8);
@@ -606,15 +619,19 @@ ssize_t iiod_client_read_unlocked(struct iiod_client *client, void *desc,
 			iio_device_get_id(dev), (unsigned long) len);
 
 	ret = iiod_client_write_all(client, desc, buf, strlen(buf));
-	if (ret < 0)
+	if (ret < 0) {
+		IIO_ERROR("WRITE ALL: %zd\n", ret);
 		return ret;
+	}
 
 	do {
 		int to_read;
 
 		ret = iiod_client_read_integer(client, desc, &to_read);
-		if (ret < 0)
+		if (ret < 0) {
+			IIO_ERROR("READ INTEGER: %zd\n", ret);
 			return ret;
+		}
 		if (to_read < 0)
 			return (ssize_t) to_read;
 		if (!to_read)
@@ -622,8 +639,10 @@ ssize_t iiod_client_read_unlocked(struct iiod_client *client, void *desc,
 
 		if (mask) {
 			ret = iiod_client_read_mask(client, desc, mask, words);
-			if (ret < 0)
+			if (ret < 0) {
+				IIO_ERROR("READ ALL: %zd\n", ret);
 				return ret;
+			}
 
 			mask = NULL; /* We read the mask only once */
 		}

@@ -6,7 +6,7 @@ OS_TYPE="$2"
 export INSIDE_DOCKER="1"
 export TRAVIS_BUILD_DIR="/$LIBNAME"
 
-cd /$LIBNAME
+cd "/$LIBNAME"
 
 if [ -d "/$LIBNAME/CI" ] ; then
 	CI="/$LIBNAME/CI"
@@ -17,10 +17,14 @@ else
 	exit 1
 fi
 
-$CI/travis/before_install_linux "$OS_TYPE"
+if [ -f "/$LIBNAME/inside-travis-ci-docker-env" ] ; then
+	. "/$LIBNAME/inside-travis-ci-docker-env"
+fi
 
-$CI/travis/make_linux "$OS_TYPE"
+"$CI/travis/before_install_linux" "$OS_TYPE"
+
+"$CI/travis/make_linux" "$OS_TYPE"
 
 # need to find this out inside the container
-. $CI/travis/lib.sh
-echo "$(get_ldist)" > /${LIBNAME}/build/.LDIST
+. "$CI/travis/lib.sh"
+echo "$(get_ldist)" > "/${LIBNAME}/build/.LDIST"

@@ -1,18 +1,21 @@
 /*
- * iio_adi_dac_overflow_test
+ * iio_adi_dac_overflow_test - part of the IIO utilities
  *
  * Copyright (C) 2015 Analog Devices, Inc.
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
- * This library is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  * */
 
 #include <errno.h>
@@ -25,38 +28,27 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "iio_common.h"
+
+
+#define MY_NAME "iio_adi_xflow_check"
+
 struct xflow_pthread_data {
 	struct iio_context *ctx;
 	const char *device_name;
 };
 
 static const struct option options[] = {
-	  {"help", no_argument, 0, 'h'},
-	  {"network", required_argument, 0, 'n'},
-	  {"uri", required_argument, 0, 'u'},
 	  {"buffer-size", required_argument, 0, 's'},
 	  {"auto", no_argument, 0, 'a'},
 	  {0, 0, 0, 0},
 };
 
 static const char *options_descriptions[] = {
-	"Show this help and quit.",
-	"Use the network backend with the provided hostname.",
-	"Use the context with the provided URI.",
+	"[-n <hostname>] [-u <uri>] [-a ] [-s <size>] <iio_device>",
 	"Size of the buffer in sample sets. Default is 1Msample",
 	"Scan for available contexts and if only one is available use it.",
 };
-
-static void usage(char *argv[])
-{
-	unsigned int i;
-
-	printf("Usage:\n\t%s [-n <hostname>] [-u <uri>] [ -a ][-s <size>] <iio_device>\n\nOptions:\n", argv[0]);
-	for (i = 0; options[i].name; i++)
-		printf("\t-%c, --%s\n\t\t\t%s\n",
-					options[i].val, options[i].name,
-					options_descriptions[i]);
-}
 
 static bool app_running = true;
 static bool device_is_tx;
@@ -123,7 +115,11 @@ static void *monitor_thread_fn(void *data)
 	sleep(1);
 
 	/* Clear all status bits */
-	iio_device_reg_write(dev, 0x80000088, 0x6);
+	ret = iio_device_reg_write(dev, 0x80000088, 0x6);
+	if (ret) {
+		fprintf(stderr, "Failed to clearn DMA status register: %s\n",
+				strerror(-ret));
+	}
 
 	while (app_running) {
 		ret = iio_device_reg_read(dev, 0x80000088, &val);
@@ -142,71 +138,26 @@ static void *monitor_thread_fn(void *data)
 		}
 
 		/* Clear bits */
-		if (val)
-			iio_device_reg_write(dev, 0x80000088, val);
+		if (val) {
+			ret = iio_device_reg_write(dev, 0x80000088, val);
+			if (ret)
+				fprintf(stderr, "Failed to clearn DMA status register: %s\n",
+						strerror(-ret));
+		}
 		sleep(1);
 	}
 
 	return (void *)0;
 }
 
-static struct iio_context *scan(void)
-{
-	struct iio_scan_context *scan_ctx;
-	struct iio_context_info **info;
-	struct iio_context *ctx = NULL;
-	unsigned int i;
-	ssize_t ret;
-
-	scan_ctx = iio_create_scan_context(NULL, 0);
-	if (!scan_ctx) {
-		fprintf(stderr, "Unable to create scan context\n");
-		return NULL;
-	}
-
-	ret = iio_scan_context_get_info_list(scan_ctx, &info);
-	if (ret < 0) {
-		char err_str[1024];
-		iio_strerror(-ret, err_str, sizeof(err_str));
-		fprintf(stderr, "Scanning for IIO contexts failed: %s\n", err_str);
-		goto err_free_ctx;
-	}
-
-	if (ret == 0) {
-		printf("No IIO context found.\n");
-		goto err_free_info_list;
-	}
-
-	if (ret == 1) {
-		ctx = iio_create_context_from_uri(iio_context_info_get_uri(info[0]));
-	} else {
-		fprintf(stderr, "Multiple contexts found. Please select one using --uri:\n");
-
-		for (i = 0; i < (size_t) ret; i++) {
-			fprintf(stderr, "\t%d: %s [%s]\n", i,
-				iio_context_info_get_description(info[i]),
-				iio_context_info_get_uri(info[i]));
-		}
-	}
-
-	err_free_info_list:
-	iio_context_info_list_free(info);
-	err_free_ctx:
-	iio_scan_context_destroy(scan_ctx);
-
-	return ctx;
-}
-
 int main(int argc, char **argv)
 {
+	char **argw;
 	unsigned int buffer_size = 1024 * 1024;
 	int c, option_index = 0;
-	const char *arg_uri = NULL;
-	const char *arg_ip = NULL;
 	unsigned int n_tx = 0, n_rx = 0;
 	static struct iio_context *ctx;
 	static struct xflow_pthread_data xflow_pthread_data;
-	bool scan_for_context = false;
 	unsigned int i, nb_channels;
 	struct iio_buffer *buffer;
 	pthread_t monitor_thread;
@@ -215,12 +166,22 @@ int main(int argc, char **argv)
 	char unit;
 	int ret;
 
-	while ((c = getopt_long(argc, argv, "+hn:u:s:a",
+	argw = dup_argv(MY_NAME, argc, argv);
+
+	ctx = handle_common_opts(MY_NAME, argc, argw, options, options_descriptions);
+
+	while ((c = getopt_long(argc, argw, "+" COMMON_OPTIONS "s:a", /* Flawfinder: ignore */
 					options, &option_index)) != -1) {
 		switch (c) {
+		/* All these are handled in the common */
 		case 'h':
-			usage(argv);
-			return EXIT_SUCCESS;
+		case 'n':
+		case 'x':
+		case 'S':
+		case 'u':
+		case 'a':
+			break;
+
 		case 's':
 			ret = sscanf(optarg, "%u%c", &buffer_size, &unit);
 			if (ret == 0)
@@ -232,15 +193,6 @@ int main(int argc, char **argv)
 					buffer_size *= 1024 * 1024;
 			}
 			break;
-		case 'n':
-			arg_ip = optarg;
-			break;
-		case 'u':
-			arg_uri = optarg;
-			break;
-		case 'a':
-			scan_for_context = true;
-			break;
 		case '?':
 			return EXIT_FAILURE;
 		}
@@ -248,9 +200,12 @@ int main(int argc, char **argv)
 
 	if (optind + 1 != argc) {
 		fprintf(stderr, "Incorrect number of arguments.\n\n");
-		usage(argv);
+		usage(MY_NAME, options, options_descriptions);
 		return EXIT_FAILURE;
 	}
+
+	if (!ctx)
+		return EXIT_FAILURE;
 
 #ifndef _WIN32
 	set_handler(SIGHUP, &quit_all);
@@ -259,22 +214,7 @@ int main(int argc, char **argv)
 	set_handler(SIGSEGV, &quit_all);
 	set_handler(SIGTERM, &quit_all);
 
-
-	if (scan_for_context)
-		ctx = scan();
-	else if (arg_uri)
-		ctx = iio_create_context_from_uri(arg_uri);
-	else if (arg_ip)
-		ctx = iio_create_network_context(arg_ip);
-	else
-		ctx = iio_create_default_context();
-
-	if (!ctx) {
-		fprintf(stderr, "Unable to create IIO context\n");
-		return EXIT_FAILURE;
-	}
-
-	device_name = argv[optind];
+	device_name = argw[optind];
 
 	dev = get_device(ctx, device_name);
 	if (!dev) {
@@ -343,6 +283,6 @@ int main(int argc, char **argv)
 
 	iio_buffer_destroy(buffer);
 	iio_context_destroy(ctx);
-
+	free_argw(argc, argw);
 	return 0;
 }

@@ -1,7 +1,7 @@
 /*
  * libiio - Library for interfacing industrial I/O (IIO) devices
  *
- * Copyright (C) 2014-2015 Analog Devices, Inc.
+ * Copyright (C) 2014-2020 Analog Devices, Inc.
  * Author: Paul Cercueil <paul.cercueil@analog.com>
  *
  * This library is free software; you can redistribute it and/or
@@ -18,51 +18,14 @@
 
 #include "iio-config.h"
 #include "iio-private.h"
+#include "network.h"
 #include "iio-lock.h"
 #include "iiod-client.h"
-
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <string.h>
-#include <sys/types.h>
-#include <time.h>
-
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#define close(s) closesocket(s)
-
-/* winsock2.h defines ERROR, we don't want that */
-#undef ERROR
-
-#else /* _WIN32 */
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <net/if.h>
-#include <sys/mman.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif /* _WIN32 */
-
-#ifdef HAVE_AVAHI
-#include <avahi-client/client.h>
-#include <avahi-common/error.h>
-#include <avahi-client/lookup.h>
-#include <avahi-common/simple-watch.h>
-#endif
-
 #include "debug.h"
-
-#define DEFAULT_TIMEOUT_MS 5000
 
 #define _STRINGIFY(x) #x
 #define STRINGIFY(x) _STRINGIFY(x)
 
-#define IIOD_PORT 30431
 #define IIOD_PORT_STR STRINGIFY(IIOD_PORT)
 
 struct iio_network_io_context {
@@ -289,7 +252,7 @@ static void do_cancel(struct iio_network_io_context *io_ctx)
 		/* If this happens something went very seriously wrong */
 		char err_str[1024];
 		iio_strerror(errno, err_str, sizeof(err_str));
-		ERROR("Unable to signal cancellation event: %s\n", err_str);
+		IIO_ERROR("Unable to signal cancellation event: %s\n", err_str);
 	}
 }
 
@@ -358,113 +321,6 @@ static bool network_connect_in_progress(int err)
 #define NETWORK_ERR_TIMEOUT ETIMEDOUT
 
 #endif
-
-#ifdef HAVE_AVAHI
-struct avahi_discovery_data {
-	AvahiSimplePoll *poll;
-	AvahiAddress *address;
-	uint16_t *port;
-	bool found, resolved;
-};
-
-static void __avahi_resolver_cb(AvahiServiceResolver *resolver,
-		__notused AvahiIfIndex iface, __notused AvahiProtocol proto,
-		__notused AvahiResolverEvent event, __notused const char *name,
-		__notused const char *type, __notused const char *domain,
-		__notused const char *host_name, const AvahiAddress *address,
-		uint16_t port, __notused AvahiStringList *txt,
-		__notused AvahiLookupResultFlags flags, void *d)
-{
-	struct avahi_discovery_data *ddata = (struct avahi_discovery_data *) d;
-
-	memcpy(ddata->address, address, sizeof(*address));
-	*ddata->port = port;
-	ddata->resolved = true;
-	avahi_service_resolver_free(resolver);
-}
-
-static void __avahi_browser_cb(AvahiServiceBrowser *browser,
-		AvahiIfIndex iface, AvahiProtocol proto,
-		AvahiBrowserEvent event, const char *name,
-		const char *type, const char *domain,
-		__notused AvahiLookupResultFlags flags, void *d)
-{
-	struct avahi_discovery_data *ddata = (struct avahi_discovery_data *) d;
-	struct AvahiClient *client = avahi_service_browser_get_client(browser);
-
-	switch (event) {
-	default:
-	case AVAHI_BROWSER_NEW:
-		ddata->found = !!avahi_service_resolver_new(client, iface,
-				proto, name, type, domain,
-				AVAHI_PROTO_UNSPEC, 0,
-				__avahi_resolver_cb, d);
-		break;
-	case AVAHI_BROWSER_ALL_FOR_NOW:
-		if (ddata->found) {
-			while (!ddata->resolved) {
-				struct timespec ts;
-				ts.tv_sec = 0;
-				ts.tv_nsec = 4000000;
-				nanosleep(&ts, NULL);
-			}
-		}
-		/* fall-through */
-	case AVAHI_BROWSER_FAILURE:
-		avahi_simple_poll_quit(ddata->poll);
-		/* fall-through */
-	case AVAHI_BROWSER_CACHE_EXHAUSTED:
-		break;
-	}
-}
-
-static int discover_host(AvahiAddress *addr, uint16_t *port)
-{
-	struct avahi_discovery_data ddata;
-	int ret = 0;
-	AvahiClient *client;
-	AvahiServiceBrowser *browser;
-	AvahiSimplePoll *poll = avahi_simple_poll_new();
-	if (!poll)
-		return -ENOMEM;
-
-	client = avahi_client_new(avahi_simple_poll_get(poll),
-			0, NULL, NULL, &ret);
-	if (!client) {
-		ERROR("Unable to start ZeroConf client :%s\n",
-				avahi_strerror(ret));
-		goto err_free_poll;
-	}
-
-	memset(&ddata, 0, sizeof(ddata));
-	ddata.poll = poll;
-	ddata.address = addr;
-	ddata.port = port;
-
-	browser = avahi_service_browser_new(client,
-			AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC,
-			"_iio._tcp", NULL, 0, __avahi_browser_cb, &ddata);
-	if (!browser) {
-		ret = avahi_client_errno(client);
-		ERROR("Unable to create ZeroConf browser: %s\n",
-				avahi_strerror(ret));
-		goto err_free_client;
-	}
-
-	DEBUG("Trying to discover host\n");
-	avahi_simple_poll_loop(poll);
-
-	if (!ddata.found)
-		ret = ENXIO;
-
-	avahi_service_browser_free(browser);
-err_free_client:
-	avahi_client_free(client);
-err_free_poll:
-	avahi_simple_poll_free(poll);
-	return -ret; /* we want a negative error code */
-}
-#endif /* HAVE_AVAHI */
 
 static ssize_t network_recv(struct iio_network_io_context *io_ctx,
 		void *data, size_t len, int flags)
@@ -546,12 +402,12 @@ static ssize_t write_command(struct iio_network_io_context *io_ctx,
 {
 	ssize_t ret;
 
-	DEBUG("Writing command: %s\n", cmd);
+	IIO_DEBUG("Writing command: %s\n", cmd);
 	ret = write_all(io_ctx, cmd, strlen(cmd));
 	if (ret < 0) {
 		char buf[1024];
-		iio_strerror(-ret, buf, sizeof(buf));
-		ERROR("Unable to send command: %s\n", buf);
+		iio_strerror(-(int) ret, buf, sizeof(buf));
+		IIO_ERROR("Unable to send command: %s\n", buf);
 	}
 	return ret;
 }
@@ -654,8 +510,17 @@ static int do_connect(int fd, const struct addrinfo *addrinfo,
 	}
 
 #ifdef _WIN32
+#ifdef _MSC_BUILD
+	/* This is so stupid, but studio emits a signed/unsigned mismatch
+	 * on their own FD_ZERO macro, so turn the warning off/on
+	 */
+#pragma warning(disable : 4389)
+#endif
 	FD_ZERO(&set);
 	FD_SET(fd, &set);
+#ifdef _MSC_BUILD
+#pragma warning(default: 4389)
+#endif
 
 	if (timeout != 0) {
 		tv.tv_sec = timeout / 1000;
@@ -698,7 +563,7 @@ static int do_connect(int fd, const struct addrinfo *addrinfo,
 	return 0;
 }
 
-static int create_socket(const struct addrinfo *addrinfo, unsigned int timeout)
+int create_socket(const struct addrinfo *addrinfo, unsigned int timeout)
 {
 	int ret, fd, yes = 1;
 
@@ -735,8 +600,10 @@ static int network_open(const struct iio_device *dev,
 		goto out_mutex_unlock;
 
 	ret = create_socket(pdata->addrinfo, DEFAULT_TIMEOUT_MS);
-	if (ret < 0)
+	if (ret < 0) {
+		IIO_ERROR("Create socket: %d\n", ret);
 		goto out_mutex_unlock;
+	}
 
 	ppdata->io_ctx.fd = ret;
 	ppdata->io_ctx.cancelled = false;
@@ -745,8 +612,10 @@ static int network_open(const struct iio_device *dev,
 
 	ret = iiod_client_open_unlocked(pdata->iiod_client,
 			&ppdata->io_ctx, dev, samples_count, cyclic);
-	if (ret < 0)
+	if (ret < 0) {
+		IIO_ERROR("Open unlocked: %d\n", ret);
 		goto err_close_socket;
+	}
 
 	ret = setup_cancel(&ppdata->io_ctx);
 	if (ret < 0)
@@ -849,8 +718,10 @@ static ssize_t read_all(struct iio_network_io_context *io_ctx,
 	uintptr_t ptr = (uintptr_t) dst;
 	while (len) {
 		ssize_t ret = network_recv(io_ctx, (void *) ptr, len, 0);
-		if (ret < 0)
+		if (ret < 0) {
+			IIO_ERROR("NETWORK RECV: %zu\n", ret);
 			return ret;
+		}
 		ptr += ret;
 		len -= ret;
 	}
@@ -878,8 +749,9 @@ static int read_integer(struct iio_network_io_context *io_ctx, long *val)
 	}
 
 	buf[i] = '\0';
+	errno = 0;
 	ret = (ssize_t) strtol(buf, &ptr, 10);
-	if (ptr == buf)
+	if (ptr == buf || errno == ERANGE)
 		return -EINVAL;
 	*val = (long) ret;
 	return 0;
@@ -892,23 +764,25 @@ static ssize_t network_read_mask(struct iio_network_io_context *io_ctx,
 	ssize_t ret;
 
 	ret = read_integer(io_ctx, &read_len);
-	if (ret < 0)
+	if (ret < 0) {
+		IIO_ERROR("READ INTEGER: %zu\n", ret);
 		return ret;
+	}
 
 	if (read_len > 0 && mask) {
 		size_t i;
 		char buf[9];
 
 		buf[8] = '\0';
-		DEBUG("Reading mask\n");
+		IIO_DEBUG("Reading mask\n");
 
 		for (i = words; i > 0; i--) {
 			ret = read_all(io_ctx, buf, 8);
 			if (ret < 0)
 				return ret;
 
-			sscanf(buf, "%08x", &mask[i - 1]);
-			DEBUG("mask[%lu] = 0x%x\n",
+			iio_sscanf(buf, "%08x", &mask[i - 1]);
+			IIO_DEBUG("mask[%lu] = 0x%x\n",
 					(unsigned long)(i - 1), mask[i - 1]);
 		}
 	}
@@ -935,7 +809,7 @@ static ssize_t read_error_code(struct iio_network_io_context *io_ctx)
 	 *
 	 * To speed up things, we delay error reporting. We just send out the
 	 * data without reading the error code that the server gives us, because
-	 * the answer will take too much time. If an error occured, it will be
+	 * the answer will take too much time. If an error occurred, it will be
 	 * reported by the next call to iio_buffer_push().
 	 */
 
@@ -1091,7 +965,7 @@ static ssize_t network_get_buffer(const struct iio_device *dev,
 	ret = (ssize_t) ftruncate(pdata->memfd, pdata->mmap_len);
 	if (ret < 0) {
 		ret = -errno;
-		ERROR("Unable to truncate temp file: %zi\n", -ret);
+		IIO_ERROR("Unable to truncate temp file: %zi\n", -ret);
 		return ret;
 	}
 
@@ -1132,7 +1006,7 @@ static ssize_t network_get_buffer(const struct iio_device *dev,
 	if (pdata->mmap_addr == MAP_FAILED) {
 		pdata->mmap_addr = NULL;
 		ret = -errno;
-		ERROR("Unable to mmap: %zi\n", -ret);
+		IIO_ERROR("Unable to mmap: %zi\n", -ret);
 		return ret;
 	}
 
@@ -1259,7 +1133,7 @@ static int network_set_timeout(struct iio_context *ctx, unsigned int timeout)
 	if (ret < 0) {
 		char buf[1024];
 		iio_strerror(-ret, buf, sizeof(buf));
-		WARNING("Unable to set R/W timeout: %s\n", buf);
+		IIO_WARNING("Unable to set R/W timeout: %s\n", buf);
 	}
 	return ret;
 }
@@ -1349,20 +1223,23 @@ static ssize_t network_read_line(struct iio_context_pdata *pdata,
 			to_trunc = (size_t) ret;
 
 		/* Advance the read offset to the byte following the \n if
-		 * found, or after the last charater read otherwise */
+		 * found, or after the last character read otherwise */
 		if (pdata->msg_trunc_supported)
 			ret = network_recv(io_ctx, NULL, to_trunc, MSG_TRUNC);
 		else
 			ret = network_recv(io_ctx, dst - ret, to_trunc, 0);
-		if (ret < 0)
+		if (ret < 0) {
+			IIO_ERROR("NETWORK RECV: %zu\n", ret);
 			return ret;
+		}
 
 		bytes_read += to_trunc;
 	} while (!found && len);
 
-	if (!found)
+	if (!found) {
+		IIO_ERROR("EIO: %zu\n", ret);
 		return -EIO;
-	else
+	} else
 		return bytes_read;
 #else
 	for (i = 0; i < len - 1; i++) {
@@ -1417,15 +1294,15 @@ struct iio_context * network_create_context(const char *host)
 	struct addrinfo hints, *res;
 	struct iio_context *ctx;
 	struct iio_context_pdata *pdata;
-	size_t i, len;
+	size_t i, len, uri_len;
 	int fd, ret;
-	char *description;
+	char *description, *uri;
 #ifdef _WIN32
 	WSADATA wsaData;
 
 	ret = WSAStartup(MAKEWORD(2, 0), &wsaData);
 	if (ret < 0) {
-		ERROR("WSAStartup failed with error %i\n", ret);
+		IIO_ERROR("WSAStartup failed with error %i\n", ret);
 		errno = -ret;
 		return NULL;
 	}
@@ -1435,25 +1312,26 @@ struct iio_context * network_create_context(const char *host)
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 
-#ifdef HAVE_AVAHI
-	if (!host) {
-		char addr_str[AVAHI_ADDRESS_STR_MAX];
+#ifdef HAVE_DNS_SD
+	if (!host || !host[0]) {
+		char addr_str[DNS_SD_ADDRESS_STR_MAX];
 		char port_str[6];
-		AvahiAddress address;
 		uint16_t port = IIOD_PORT;
 
-		memset(&address, 0, sizeof(address));
-
-		ret = discover_host(&address, &port);
+		ret = dnssd_discover_host(addr_str, sizeof(addr_str), &port);
 		if (ret < 0) {
 			char buf[1024];
 			iio_strerror(-ret, buf, sizeof(buf));
-			DEBUG("Unable to find host: %s\n", buf);
+			IIO_DEBUG("Unable to find host: %s\n", buf);
 			errno = -ret;
 			return NULL;
 		}
+		if (!strlen(addr_str)) {
+			IIO_DEBUG("No DNS Service Discovery hosts on network\n");
+			errno = ENOENT;
+			return NULL;
+		}
 
-		avahi_address_snprint(addr_str, sizeof(addr_str), &address);
 		iio_snprintf(port_str, sizeof(port_str), "%hu", port);
 		ret = getaddrinfo(addr_str, port_str, &hints, &res);
 	} else
@@ -1463,7 +1341,7 @@ struct iio_context * network_create_context(const char *host)
 	}
 
 	if (ret) {
-		ERROR("Unable to find host: %s\n", gai_strerror(ret));
+		IIO_ERROR("Unable to find host: %s\n", gai_strerror(ret));
 #ifndef _WIN32
 		if (ret != EAI_SYSTEM)
 			errno = -ret;
@@ -1498,14 +1376,14 @@ struct iio_context * network_create_context(const char *host)
 
 	pdata->msg_trunc_supported = msg_trunc_supported(&pdata->io_ctx);
 	if (pdata->msg_trunc_supported)
-		DEBUG("MSG_TRUNC is supported\n");
+		IIO_DEBUG("MSG_TRUNC is supported\n");
 	else
-		DEBUG("MSG_TRUNC is NOT supported\n");
+		IIO_DEBUG("MSG_TRUNC is NOT supported\n");
 
 	if (!pdata->iiod_client)
 		goto err_destroy_mutex;
 
-	DEBUG("Creating context...\n");
+	IIO_DEBUG("Creating context...\n");
 	ctx = iiod_client_create_context(pdata->iiod_client, &pdata->io_ctx);
 	if (!ctx)
 		goto err_destroy_iiod_client;
@@ -1522,10 +1400,21 @@ struct iio_context * network_create_context(const char *host)
 	len = INET_ADDRSTRLEN + 1;
 #endif
 
+	uri_len = len;
+	if (host && host[0])
+		uri_len = strnlen(host, MAXHOSTNAMELEN);
+	uri_len += sizeof ("ip:");
+
+	uri = malloc(uri_len);
+	if (!uri) {
+		ret = -ENOMEM;
+		goto err_network_shutdown;
+	}
+
 	description = malloc(len);
 	if (!description) {
 		ret = -ENOMEM;
-		goto err_network_shutdown;
+		goto err_free_uri;
 	}
 
 	description[0] = '\0';
@@ -1542,7 +1431,7 @@ struct iio_context * network_create_context(const char *host)
 					strlen(description) + 1);
 			if (!ptr) {
 				ret = -errno;
-				ERROR("Unable to lookup interface of IPv6 address\n");
+				IIO_ERROR("Unable to lookup interface of IPv6 address\n");
 				goto err_free_description;
 			}
 
@@ -1556,11 +1445,20 @@ struct iio_context * network_create_context(const char *host)
 		inet_ntop(AF_INET, &in->sin_addr, description, INET_ADDRSTRLEN);
 #else
 		char *tmp = inet_ntoa(in->sin_addr);
-		strncpy(description, tmp, len);
+		iio_strlcpy(description, tmp, len);
 #endif
 	}
 
 	ret = iio_context_add_attr(ctx, "ip,ip-addr", description);
+	if (ret < 0)
+		goto err_free_description;
+
+	if (host && host[0])
+		iio_snprintf(uri, uri_len, "ip:%s", host);
+	else
+		iio_snprintf(uri, uri_len, "ip:%s\n", description);
+
+	ret = iio_context_add_attr(ctx, "uri", uri);
 	if (ret < 0)
 		goto err_free_description;
 
@@ -1604,12 +1502,15 @@ struct iio_context * network_create_context(const char *host)
 		ctx->description = description;
 	}
 
+	free(uri);
 	iiod_client_set_timeout(pdata->iiod_client, &pdata->io_ctx,
 			calculate_remote_timeout(DEFAULT_TIMEOUT_MS));
 	return ctx;
 
 err_free_description:
 	free(description);
+err_free_uri:
+	free(uri);
 err_network_shutdown:
 	iio_context_destroy(ctx);
 	errno = -ret;

@@ -1,3 +1,7 @@
-add_subdirectory(csharp)
-add_subdirectory(matlab)
-add_subdirectory(python)
+if (CSHARP_BINDINGS)
+	add_subdirectory(csharp)
+endif()
+
+if (PYTHON_BINDINGS)
+	add_subdirectory(python)
+endif()

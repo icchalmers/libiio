@@ -1,19 +1,22 @@
 /*
- * libiio - Library for interfacing industrial I/O (IIO) devices
+ * iio_info - Part of Industrial I/O (IIO) utilities
  *
- * Copyright (C) 2014 Analog Devices, Inc.
+ * Copyright (C) 2014-2020 Analog Devices, Inc.
  * Author: Paul Cercueil <paul.cercueil@analog.com>
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
- * This library is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  * */
 
 #include <errno.h>
@@ -23,137 +26,24 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "iio_common.h"
+
 #define MY_NAME "iio_info"
 
 #ifdef _WIN32
 #define snprintf sprintf_s
 #endif
 
-enum backend {
-	LOCAL,
-	XML,
-	NETWORK,
-	AUTO,
-};
-
 static const struct option options[] = {
-	  {"help", no_argument, 0, 'h'},
-	  {"xml", required_argument, 0, 'x'},
-	  {"network", required_argument, 0, 'n'},
-	  {"uri", required_argument, 0, 'u'},
-	  {"scan", no_argument, 0, 's'},
-	  {"auto", no_argument, 0, 'a'},
-	  {0, 0, 0, 0},
+	{"scan", no_argument, 0, 's'},
+	{0, 0, 0, 0},
 };
 
 static const char *options_descriptions[] = {
-	"Show this help and quit.",
-	"Use the XML backend with the provided XML file.",
-	"Use the network backend with the provided hostname.",
-	"Use the context at the provided URI.",
+	"[-x <xml_file>]\n"
+		"\t\t\t\t[-u <uri>]",
 	"Scan for available backends.",
-	"Scan for available contexts and if only one is available use it.",
 };
-
-static void usage(void)
-{
-	unsigned int i;
-
-	printf("Usage:\n\t" MY_NAME " [-x <xml_file>]\n\t"
-			MY_NAME " [-n <hostname>]\n\t"
-			MY_NAME " [-u <uri>]\n\nOptions:\n");
-	for (i = 0; options[i].name; i++)
-		printf("\t-%c, --%s\n\t\t\t%s\n",
-					options[i].val, options[i].name,
-					options_descriptions[i]);
-}
-
-static void scan(void)
-{
-	struct iio_scan_context *ctx;
-	struct iio_context_info **info;
-	unsigned int i;
-	ssize_t ret;
-
-	ctx = iio_create_scan_context(NULL, 0);
-	if (!ctx) {
-		fprintf(stderr, "Unable to create scan context\n");
-		return;
-	}
-
-	ret = iio_scan_context_get_info_list(ctx, &info);
-	if (ret < 0) {
-		fprintf(stderr, "Unable to scan: %li\n", (long) ret);
-		goto err_free_ctx;
-	}
-
-	if (ret == 0) {
-		printf("No contexts found.\n");
-		goto err_free_info_list;
-	}
-
-	printf("Available contexts:\n");
-
-	for (i = 0; i < (size_t) ret; i++) {
-		printf("\t%d: %s [%s]\n", i,
-			iio_context_info_get_description(info[i]),
-			iio_context_info_get_uri(info[i]));
-	}
-
-err_free_info_list:
-	iio_context_info_list_free(info);
-err_free_ctx:
-	iio_scan_context_destroy(ctx);
-}
-
-static struct iio_context * autodetect_context(void)
-{
-	struct iio_scan_context *scan_ctx;
-	struct iio_context_info **info;
-	struct iio_context *ctx = NULL;
-	unsigned int i;
-	ssize_t ret;
-
-	scan_ctx = iio_create_scan_context(NULL, 0);
-	if (!scan_ctx) {
-		fprintf(stderr, "Unable to create scan context\n");
-		return NULL;
-	}
-
-	ret = iio_scan_context_get_info_list(scan_ctx, &info);
-	if (ret < 0) {
-		char err_str[1024];
-		iio_strerror(-ret, err_str, sizeof(err_str));
-		fprintf(stderr, "Scanning for IIO contexts failed: %s\n", err_str);
-		goto err_free_ctx;
-	}
-
-	if (ret == 0) {
-		printf("No IIO context found.\n");
-		goto err_free_info_list;
-	}
-
-	if (ret == 1) {
-		printf("Using auto-detected IIO context at URI \"%s\"\n",
-				iio_context_info_get_uri(info[0]));
-		ctx = iio_create_context_from_uri(iio_context_info_get_uri(info[0]));
-	} else {
-		fprintf(stderr, "Multiple contexts found. Please select one using --uri:\n");
-
-		for (i = 0; i < (size_t) ret; i++) {
-			fprintf(stderr, "\t%d: %s [%s]\n", i,
-				iio_context_info_get_description(info[i]),
-				iio_context_info_get_uri(info[i]));
-		}
-	}
-
-err_free_info_list:
-	iio_context_info_list_free(info);
-err_free_ctx:
-	iio_scan_context_destroy(scan_ctx);
-
-	return ctx;
-}
 
 static int dev_is_buffer_capable(const struct iio_device *dev)
 {
@@ -171,63 +61,14 @@ static int dev_is_buffer_capable(const struct iio_device *dev)
 
 int main(int argc, char **argv)
 {
+	char **argw;
 	struct iio_context *ctx;
 	int c, option_index = 0;
-	const char *arg_uri = NULL;
-	const char *arg_ip = NULL;
-	const char *arg_xml = NULL;
-	enum backend backend = LOCAL;
-	bool do_scan = false, detect_context = false;
 	unsigned int i, major, minor;
 	char git_tag[8];
 	int ret;
 
-	while ((c = getopt_long(argc, argv, "+hn:x:u:sa",
-					options, &option_index)) != -1) {
-		switch (c) {
-		case 'h':
-			usage();
-			return EXIT_SUCCESS;
-		case 'n':
-			if (backend != LOCAL) {
-				fprintf(stderr, "-x, -n and -u are mutually exclusive\n");
-				return EXIT_FAILURE;
-			}
-			backend = NETWORK;
-			arg_ip = optarg;
-			break;
-		case 'x':
-			if (backend != LOCAL) {
-				fprintf(stderr, "-x, -n and -u are mutually exclusive\n");
-				return EXIT_FAILURE;
-			}
-			backend = XML;
-			arg_xml = optarg;
-			break;
-		case 's':
-			do_scan = true;
-			break;
-		case 'u':
-			if (backend != LOCAL) {
-				fprintf(stderr, "-x, -n and -u are mutually exclusive\n");
-				return EXIT_FAILURE;
-			}
-			backend = AUTO;
-			arg_uri = optarg;
-			break;
-		case 'a':
-			detect_context = true;
-			break;
-		case '?':
-			return EXIT_FAILURE;
-		}
-	}
-
-	if (optind != argc) {
-		fprintf(stderr, "Incorrect number of arguments.\n\n");
-		usage();
-		return EXIT_FAILURE;
-	}
+	argw = dup_argv(MY_NAME, argc, argv);
 
 	iio_library_get_version(&major, &minor, git_tag);
 	printf("Library version: %u.%u (git tag: %s)\n", major, minor, git_tag);
@@ -237,33 +78,35 @@ int main(int argc, char **argv)
 		printf(" %s", iio_get_backend(i));
 	printf("\n");
 
-	if (do_scan) {
-		scan();
-		return EXIT_SUCCESS;
+	while ((c = getopt_long(argc, argw, "+" COMMON_OPTIONS "s",	/* Flawfinder: ignore */
+					options, &option_index)) != -1) {
+		switch (c) {
+			/* All these are handled in the common */
+		case 'h':
+		case 'n':
+		case 'x':
+		case 'S':
+		case 'u':
+		case 'a':
+			break;
+		case 's':
+			autodetect_context(false, false, MY_NAME);
+			return EXIT_SUCCESS;
+		case '?':
+			printf("Unknown argument '%c'\n", c);
+			return EXIT_FAILURE;
+		}
 	}
 
-	if (detect_context)
-		ctx = autodetect_context();
-	else if (backend == XML)
-		ctx = iio_create_xml_context(arg_xml);
-	else if (backend == NETWORK)
-		ctx = iio_create_network_context(arg_ip);
-	else if (backend == AUTO)
-		ctx = iio_create_context_from_uri(arg_uri);
-	else
-		ctx = iio_create_default_context();
-
-	if (!ctx) {
-		if (!detect_context) {
-			char buf[1024];
-
-			iio_strerror(errno, buf, sizeof(buf));
-			fprintf(stderr, "Unable to create IIO context: %s\n",
-					buf);
-		}
-
+	if (optind != argc) {
+		fprintf(stderr, "Incorrect number of arguments.\n\n");
+		usage(MY_NAME, options, options_descriptions);
 		return EXIT_FAILURE;
 	}
+
+	ctx = handle_common_opts(MY_NAME, argc, argw, options, options_descriptions);
+	if (!ctx)
+		return EXIT_FAILURE;
 
 	printf("IIO context created with %s backend.\n",
 			iio_context_get_name(ctx));
@@ -272,8 +115,11 @@ int main(int argc, char **argv)
 	if (!ret)
 		printf("Backend version: %u.%u (git tag: %s)\n",
 				major, minor, git_tag);
-	else
-		fprintf(stderr, "Unable to get backend version: %i\n", ret);
+	else {
+		char err_str[1024];
+		iio_strerror(-ret, err_str, sizeof(err_str));
+		fprintf(stderr, "Unable to get backend version: %s (%i)\n", err_str, ret);
+	}
 
 	printf("Backend description string: %s\n",
 			iio_context_get_description(ctx));
@@ -285,12 +131,20 @@ int main(int argc, char **argv)
 	for (i = 0; i < nb_ctx_attrs; i++) {
 		const char *key, *value;
 
-		iio_context_get_attr(ctx, i, &key, &value);
-		printf("\t%s: %s\n", key, value);
+		ret = iio_context_get_attr(ctx, i, &key, &value);
+		if (ret == 0)
+			printf("\t%s: %s\n", key, value);
+		else {
+			char err_str[1024];
+			iio_strerror(-ret, err_str, sizeof(err_str));
+			fprintf(stderr, "\tUnable to read IIO context attributes: %s (%i)\n",
+					err_str, ret);
+		}
 	}
 
 	unsigned int nb_devices = iio_context_get_devices_count(ctx);
 	printf("IIO context has %u devices:\n", nb_devices);
+	char *buf = xmalloc(BUF_SIZE, MY_NAME);
 
 	for (i = 0; i < nb_devices; i++) {
 		const struct iio_device *dev = iio_context_get_device(ctx, i);
@@ -319,6 +173,9 @@ int main(int argc, char **argv)
 			printf("\t\t\t%s: %s (%s",
 					iio_channel_get_id(ch),
 					name ? name : "", type_name);
+
+			if (iio_channel_get_type(ch) == IIO_CHAN_TYPE_UNKNOWN)
+				printf(", WARN:iio_channel_get_type()=UNKNOWN");
 
 			if (iio_channel_is_scan_element(ch)) {
 				const struct iio_data_format *format =
@@ -353,16 +210,15 @@ int main(int argc, char **argv)
 			unsigned int k;
 			for (k = 0; k < nb_attrs; k++) {
 				const char *attr = iio_channel_get_attr(ch, k);
-				char buf[1024];
 				ret = (int) iio_channel_attr_read(ch,
-						attr, buf, sizeof(buf));
+						attr, buf, BUF_SIZE);
 
 				printf("\t\t\t\tattr %2u: %s ", k, attr);
 
 				if (ret > 0) {
 					printf("value: %s\n", buf);
 				} else {
-					iio_strerror(-ret, buf, sizeof(buf));
+					iio_strerror(-ret, buf, BUF_SIZE);
 					printf("ERROR: %s (%i)\n", buf, ret);
 				}
 			}
@@ -374,9 +230,8 @@ int main(int argc, char **argv)
 					nb_attrs);
 			for (j = 0; j < nb_attrs; j++) {
 				const char *attr = iio_device_get_attr(dev, j);
-				char buf[1024];
 				ret = (int) iio_device_attr_read(dev,
-						attr, buf, sizeof(buf));
+						attr, buf, BUF_SIZE);
 
 				printf("\t\t\t\tattr %2u: %s ",
 						j, attr);
@@ -384,7 +239,7 @@ int main(int argc, char **argv)
 				if (ret > 0) {
 					printf("value: %s\n", buf);
 				} else {
-					iio_strerror(-ret, buf, sizeof(buf));
+					iio_strerror(-ret, buf, BUF_SIZE);
 					printf("ERROR: %s (%i)\n", buf, ret);
 				}
 			}
@@ -396,9 +251,8 @@ int main(int argc, char **argv)
 					nb_attrs);
 			for (j = 0; j < nb_attrs; j++) {
 				const char *attr = iio_device_get_buffer_attr(dev, j);
-				char buf[1024];
 				ret = (int) iio_device_buffer_attr_read(dev,
-						attr, buf, sizeof(buf));
+						attr, buf, BUF_SIZE);
 
 				printf("\t\t\t\tattr %2u: %s ",
 						j, attr);
@@ -406,7 +260,7 @@ int main(int argc, char **argv)
 				if (ret > 0) {
 					printf("value: %s\n", buf);
 				} else {
-					iio_strerror(-ret, buf, sizeof(buf));
+					iio_strerror(-ret, buf, BUF_SIZE);
 					printf("ERROR: %s (%i)\n", buf, ret);
 				}
 			}
@@ -418,16 +272,15 @@ int main(int argc, char **argv)
 			for (j = 0; j < nb_attrs; j++) {
 				const char *attr =
 					iio_device_get_debug_attr(dev, j);
-				char buf[1024];
 
 				ret = (int) iio_device_debug_attr_read(dev,
-						attr, buf, sizeof(buf));
+						attr, buf, BUF_SIZE);
 				printf("\t\t\t\tdebug attr %2u: %s ",
 						j, attr);
 				if (ret > 0) {
 					printf("value: %s\n", buf);
 				} else {
-					iio_strerror(-ret, buf, sizeof(buf));
+					iio_strerror(-ret, buf, BUF_SIZE);
 					printf("ERROR: %s (%i)\n", buf, ret);
 				}
 			}
@@ -444,9 +297,16 @@ int main(int argc, char **argv)
 						iio_device_get_id(trig),
 						name ? name : "");
 			}
+		} else if (ret == -ENOENT) {
+			printf("\t\tNo trigger on this device\n");
+		} else if (ret < 0) {
+			iio_strerror(-ret, buf, BUF_SIZE);
+			printf("ERROR: checking for trigger : %s (%i)\n", buf, ret);
 		}
 	}
 
+	free_argw(argc, argw);
+	free(buf);
 	iio_context_destroy(ctx);
 	return EXIT_SUCCESS;
 }

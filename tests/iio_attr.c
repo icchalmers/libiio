@@ -1,20 +1,23 @@
 /*
- * libiio - Library for interfacing industrial I/O (IIO) devices
+ * iio_attr - part of the Industrial I/O (IIO) utilities
  *
- * Copyright (C) 2014, 2017 Analog Devices, Inc.
+ * Copyright (C) 2014 - 2020 Analog Devices, Inc.
  * Author: Paul Cercueil <paul.cercueil@analog.com>
  *         Robin Getz <robin.getz@analog.com>
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
- * This library is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  * */
 
 #include <errno.h>
@@ -25,20 +28,14 @@
 #include <string.h>
 #include <ctype.h>
 #include <sys/types.h>
+#include "gen_code.h"
+#include "iio_common.h"
 
 #define MY_NAME "iio_attr"
 
 #ifdef _WIN32
 #define snprintf sprintf_s
-#else
-#define _strdup strdup
 #endif
-
-enum backend {
-	LOCAL,
-	XML,
-	AUTO
-};
 
 static bool str_match(const char * haystack, char * needle, bool ignore)
 {
@@ -56,17 +53,17 @@ static bool str_match(const char * haystack, char * needle, bool ignore)
 	if (!strcmp(".", needle) || !strcmp("*", needle))
 		return true;
 
-	ncpy = _strdup(needle);
-	hcpy = _strdup(haystack);
+	ncpy = cmn_strndup(needle, NAME_MAX);
+	hcpy = cmn_strndup(haystack, NAME_MAX);
 
 	if (!ncpy || !hcpy)
 		goto eek;
 
 	if (ignore) {
 		for (i = 0; hcpy[i]; i++)
-			hcpy[i] = tolower(hcpy[i]);
+			hcpy[i] = (char) (tolower(hcpy[i]) & 0xFF);
 		for (i = 0; ncpy[i]; i++)
-			ncpy[i] = tolower(ncpy[i]);
+			ncpy[i] = (char) (tolower(ncpy[i]) & 0xFF);
 	}
 
 	first = ncpy[0];
@@ -96,101 +93,73 @@ eek:
 	return ret;
 }
 
-static struct iio_context * autodetect_context(void)
-{
-	struct iio_scan_context *scan_ctx;
-	struct iio_context_info **info;
-	struct iio_context *ctx = NULL;
-	unsigned int i;
-	ssize_t ret;
-
-	scan_ctx = iio_create_scan_context(NULL, 0);
-	if (!scan_ctx) {
-		fprintf(stderr, "Unable to create scan context\n");
-		return NULL;
-	}
-
-	ret = iio_scan_context_get_info_list(scan_ctx, &info);
-	if (ret < 0) {
-		char err_str[1024];
-		iio_strerror(-ret, err_str, sizeof(err_str));
-		fprintf(stderr, "Scanning for IIO contexts failed: %s\n", err_str);
-		goto err_free_ctx;
-	}
-
-	if (ret == 0) {
-		printf("No IIO context found.\n");
-		goto err_free_info_list;
-	}
-	if (ret == 1) {
-		printf("Using auto-detected IIO context at URI \"%s\"\n",
-				iio_context_info_get_uri(info[0]));
-		ctx = iio_create_context_from_uri(iio_context_info_get_uri(info[0]));
-	} else {
-		fprintf(stderr, "Multiple contexts found. Please select one using --uri:\n");
-		for (i = 0; i < (size_t) ret; i++) {
-			fprintf(stderr, "\t%d: %s [%s]\n",
-					i, iio_context_info_get_description(info[i]),
-					iio_context_info_get_uri(info[i]));
-		}
-	}
-
-err_free_info_list:
-	iio_context_info_list_free(info);
-err_free_ctx:
-	iio_scan_context_destroy(scan_ctx);
-
-	return ctx;
-}
-
-
-static void dump_device_attributes(const struct iio_device *dev,
+static int dump_device_attributes(const struct iio_device *dev,
 		const char *attr, const char *wbuf, bool quiet)
 {
-	ssize_t ret;
-	char buf[1024];
+	ssize_t ret = 0;
+	char *buf = xmalloc(BUF_SIZE, MY_NAME);
+	const char *name = iio_device_get_name(dev);
 
 	if (!wbuf || !quiet) {
-		if (!quiet)
-			printf("dev '%s', attr '%s', value :",
-					iio_device_get_name(dev), attr);
-		ret = iio_device_attr_read(dev, attr, buf, sizeof(buf));
+		if (!quiet) {
+			printf("%s ", iio_device_is_trigger(dev) ? "trig" : "dev");
+			if(name)
+				printf("'%s'", name);
+			else
+				printf("'%s'", iio_device_get_id(dev));
+
+			printf(", attr '%s', value :", attr);
+		}
+		gen_function("device", "dev", attr, NULL);
+		ret = iio_device_attr_read(dev, attr, buf, BUF_SIZE);
 		if (ret > 0) {
 			if (quiet)
 				printf("%s\n", buf);
 			else
 				printf("'%s'\n", buf);
 		} else {
-			iio_strerror(-ret, buf, sizeof(buf));
+			iio_strerror(-(int)ret, buf, BUF_SIZE);
 			printf("ERROR: %s (%li)\n", buf, (long)ret);
 		}
 	}
 	if (wbuf) {
+		gen_function("device", "dev", attr, wbuf);
 		ret = iio_device_attr_write(dev, attr, wbuf);
 		if (ret > 0) {
 			if (!quiet)
 				printf("wrote %li bytes to %s\n", (long)ret, attr);
+			dump_device_attributes(dev, attr, NULL, quiet);
 		} else {
-			iio_strerror(-ret, buf, sizeof(buf));
+			iio_strerror(-(int)ret, buf, BUF_SIZE);
 			printf("ERROR: %s (%li) while writing '%s' with '%s'\n",
 					buf, (long)ret, attr, wbuf);
 		}
-		dump_device_attributes(dev, attr, NULL, quiet);
 	}
+	free(buf);
+
+	return (int)ret;
 }
 
-static void dump_buffer_attributes(const struct iio_device *dev,
+static int dump_buffer_attributes(const struct iio_device *dev,
 				  const char *attr, const char *wbuf, bool quiet)
 {
-	ssize_t ret;
-	char buf[1024];
+	ssize_t ret = 0;
+	char *buf = xmalloc(BUF_SIZE, MY_NAME);
+	const char *name = iio_device_get_name(dev);
 
 	if (!wbuf || !quiet) {
-		ret = iio_device_buffer_attr_read(dev, attr, buf, sizeof(buf));
+		gen_function("device_buffer", "dev", attr, NULL);
+		ret = iio_device_buffer_attr_read(dev, attr, buf, BUF_SIZE);
 
-		if (!quiet)
-			printf("dev '%s', buffer attr '%s', value :",
-					iio_device_get_name(dev), attr);
+		if (!quiet) {
+			printf("%s ", iio_device_is_trigger(dev) ? "trig" : "dev");
+			if (name)
+				printf("'%s'", name);
+			else
+				printf("'%s'", iio_device_get_id(dev));
+
+			printf(", buffer attr '%s', value :", attr);
+		}
 
 		if (ret > 0) {
 			if (quiet)
@@ -198,37 +167,50 @@ static void dump_buffer_attributes(const struct iio_device *dev,
 			else
 				printf("'%s'\n", buf);
 		} else {
-			iio_strerror(-ret, buf, sizeof(buf));
+			iio_strerror(-(int)ret, buf, BUF_SIZE);
 			printf("ERROR: %s (%li)\n", buf, (long)ret);
 		}
 	}
 
 	if (wbuf) {
+		gen_function("device_buffer", "dev", attr, wbuf);
 		ret = iio_device_buffer_attr_write(dev, attr, wbuf);
 		if (ret > 0) {
 			if (!quiet)
 				printf("wrote %li bytes to %s\n", (long)ret, attr);
+			dump_buffer_attributes(dev, attr, NULL, quiet);
 		} else {
-			iio_strerror(-ret, buf, sizeof(buf));
+			iio_strerror(-(int)ret, buf, BUF_SIZE);
 			printf("ERROR: %s (%li) while writing '%s' with '%s'\n",
 					buf, (long)ret, attr, wbuf);
 		}
-		dump_buffer_attributes(dev, attr, NULL, quiet);
 	}
+
+	free(buf);
+	return (int)ret;
 }
 
-static void dump_debug_attributes(const struct iio_device *dev,
+static int dump_debug_attributes(const struct iio_device *dev,
 				  const char *attr, const char *wbuf, bool quiet)
 {
-	ssize_t ret;
-	char buf[1024];
+	ssize_t ret = 0;
+	char *buf = xmalloc(BUF_SIZE, MY_NAME);
+	const char *name = iio_device_get_name(dev);
 
 	if (!wbuf || !quiet) {
-		ret = iio_device_debug_attr_read(dev, attr, buf, sizeof(buf));
+		gen_function("device_debug", "dev", attr, NULL);
+		ret = iio_device_debug_attr_read(dev, attr, buf, BUF_SIZE);
 
-		if (!quiet)
-			printf("dev '%s', debug attr '%s', value :",
-					iio_device_get_name(dev), attr);
+		if (!quiet) {
+			printf("%s ", iio_device_is_trigger(dev) ? "trig" : "dev");
+			if (name)
+				printf("'%s'", name);
+			else
+				printf("'%s'", iio_device_get_id(dev));
+
+			printf(", debug attr '%s', value :", attr);
+
+		}
 
 		if (ret > 0) {
 			if (quiet)
@@ -236,31 +218,36 @@ static void dump_debug_attributes(const struct iio_device *dev,
 			else
 				printf("'%s'\n", buf);
 		} else {
-			iio_strerror(-ret, buf, sizeof(buf));
+			iio_strerror(-(int)ret, buf, BUF_SIZE);
 			printf("ERROR: %s (%li)\n", buf, (long)ret);
 		}
 	}
 
 	if (wbuf) {
+		gen_function("device_debug", "dev", attr, wbuf);
 		ret = iio_device_debug_attr_write(dev, attr, wbuf);
 		if (ret > 0) {
 			if (!quiet)
 				printf("wrote %li bytes to %s\n", (long)ret, attr);
+			dump_debug_attributes(dev, attr, NULL, quiet);
 		} else {
-			iio_strerror(-ret, buf, sizeof(buf));
+			iio_strerror(-(int)ret, buf, BUF_SIZE);
 			printf("ERROR: %s (%li) while writing '%s' with '%s'\n",
 					buf, (long)ret, attr, wbuf);
 		}
-		dump_debug_attributes(dev, attr, NULL, quiet);
 	}
+
+	free(buf);
+	return (int)ret;
 }
 
-static void dump_channel_attributes(const struct iio_device *dev,
+static int dump_channel_attributes(const struct iio_device *dev,
 		struct iio_channel *ch, const char *attr, const char *wbuf, bool quiet)
 {
-	ssize_t ret;
-	char buf[1024];
+	ssize_t ret = 0;
+	char *buf = xmalloc(BUF_SIZE, MY_NAME);
 	const char *type_name;
+	const char *name = iio_device_get_name(dev);
 
 	if (!wbuf || !quiet) {
 		if (iio_channel_is_output(ch))
@@ -268,12 +255,19 @@ static void dump_channel_attributes(const struct iio_device *dev,
 		else
 			type_name = "input";
 
-		ret = iio_channel_attr_read(ch, attr, buf, sizeof(buf));
-		if (!quiet)
-			printf("dev '%s', channel '%s' (%s), ",
-					iio_device_get_name(dev),
+		gen_function("channel", "ch", attr, NULL);
+		ret = iio_channel_attr_read(ch, attr, buf, BUF_SIZE);
+		if (!quiet) {
+			printf("%s ", iio_device_is_trigger(dev) ? "trig" : "dev");
+			if (name)
+				printf("'%s'", name);
+			else
+				printf("'%s'", iio_device_get_id(dev));
+
+			printf(", channel '%s' (%s), ",
 					iio_channel_get_id(ch),
 					type_name);
+		}
 		if (iio_channel_get_name(ch) && !quiet)
 			printf("id '%s', ", iio_channel_get_name(ch));
 
@@ -286,32 +280,31 @@ static void dump_channel_attributes(const struct iio_device *dev,
 			else
 				printf("value '%s'\n", buf);
 		} else {
-			iio_strerror(-ret, buf, sizeof(buf));
+			iio_strerror(-(int)ret, buf, BUF_SIZE);
 			printf("ERROR: %s (%li)\n", buf, (long)ret);
 		}
 	}
 	if (wbuf) {
+		gen_function("channel", "ch", attr, wbuf);
 		ret = iio_channel_attr_write(ch, attr, wbuf);
 		if (ret > 0) {
 			if (!quiet)
 				printf("wrote %li bytes to %s\n", (long)ret, attr);
+			dump_channel_attributes(dev, ch, attr, NULL, quiet);
 		} else {
-			iio_strerror(-ret, buf, sizeof(buf));
+			iio_strerror(-(int)ret, buf, BUF_SIZE);
 			printf("error %s (%li) while writing '%s' with '%s'\n",
 					buf, (long)ret, attr, wbuf);
 		}
-		dump_channel_attributes(dev, ch, attr, NULL, quiet);
 	}
+	free(buf);
+	return (int)ret;
 }
 
 static const struct option options[] = {
-	/* help */
-	{"help", no_argument, 0, 'h'},
 	{"ignore-case", no_argument, 0, 'I'},
 	{"quiet", no_argument, 0, 'q'},
-	/* context connection */
-	{"auto", no_argument, 0, 'a'},
-	{"uri", required_argument, 0, 'u'},
+	{"generate-code", required_argument, 0, 'g'},
 	/* Channel qualifiers */
 	{"input-channel", no_argument, 0, 'i'},
 	{"output-channel", no_argument, 0, 'o'},
@@ -326,13 +319,15 @@ static const struct option options[] = {
 };
 
 static const char *options_descriptions[] = {
+	"-d [device] [attr] [value]\n"
+		"\t\t\t\t-c [device] [channel] [attr] [value]\n"
+		"\t\t\t\t-B [device] [attr] [value]\n"
+		"\t\t\t\t-D [device] [attr] [value]\n"
+		"\t\t\t\t-C [attr]",
 	/* help */
-	"Show this help and quit.",
 	"Ignore case distinctions.",
 	"Return result only.",
-	/* context connection */
-	"Use the first context found.",
-	"Use the context at the provided URI.",
+	"Generate code.",
 	/* Channel qualifiers */
 	"Filter Input Channels only.",
 	"Filter Output Channels only.",
@@ -345,61 +340,37 @@ static const char *options_descriptions[] = {
 	"Read/Write debug attributes.",
 };
 
-static void usage(void)
-{
-	unsigned int i, j = 0, k;
-
-	printf("Usage:\n\t" MY_NAME " [OPTION]...\t-d [device] [attr] [value]\n"
-		"\t\t\t\t-c [device] [channel] [attr] [value]\n"
-		"\t\t\t\t-B [device] [attr] [value]\n"
-		"\t\t\t\t-D [device] [attr] [value]\n"
-		"\t\t\t\t-C [attr]\nOptions:\n");
-	for (i = 0; options[i].name; i++) {
-		k = strlen(options[i].name);
-		if (k > j)
-			j = k;
-	}
-	j++;
-	for (i = 0; options[i].name; i++) {
-		printf("\t-%c, --%s%*c: %s\n",
-				options[i].val, options[i].name,
-				j - (int)strlen(options[i].name), ' ',
-				options_descriptions[i]);
-		if (i == 3)
-			printf("Optional qualifiers:\n");
-		if (i == 6)
-			printf("Attribute types:\n");
-	}
-}
-
 int main(int argc, char **argv)
 {
+	char **argw;
 	struct iio_context *ctx;
 	int c, option_index = 0;
 	int device_index = 0, channel_index = 0, attr_index = 0;
-	const char *arg_uri = NULL;
-	enum backend backend = LOCAL;
-	bool detect_context = false, search_device = false, ignore_case = false,
+	const char *gen_file = NULL;
+	bool search_device = false, ignore_case = false,
 		search_channel = false, search_buffer = false, search_debug = false,
 		search_context = false, input_only = false, output_only = false,
-		scan_only = false, quiet = false;
+		scan_only = false, quiet = false, gen_code = false;
+	bool found_err = false, read_err = false, write_err = false,
+		dev_found = false, attr_found = false, ctx_found = false,
+		channel_found = false ;
 	unsigned int i;
 	char *wbuf = NULL;
 
-	while ((c = getopt_long(argc, argv, "+hau:CdcBDiosIq",
+	argw = dup_argv(MY_NAME, argc, argv);
+
+	ctx = handle_common_opts(MY_NAME, argc, argw, options, options_descriptions);
+
+	while ((c = getopt_long(argc, argw, "+" COMMON_OPTIONS "g:CdcBDiosIq", /* Flawfinder: ignore */
 					options, &option_index)) != -1) {
 		switch (c) {
-		/* help */
+		/* All these are handled in the common */
 		case 'h':
-			usage();
-			return EXIT_SUCCESS;
-		/* context connection */
-		case 'a':
-			detect_context = true;
-			break;
+		case 'n':
+		case 'x':
+		case 'S':
 		case 'u':
-			backend = AUTO;
-			arg_uri = optarg;
+		case 'a':
 			break;
 		/* Attribute type
 		 * 'd'evice, 'c'hannel, 'C'ontext, 'B'uffer or 'D'ebug
@@ -436,8 +407,23 @@ int main(int argc, char **argv)
 		case 'q':
 			quiet = true;
 			break;
+		case 'g':
+			gen_code = true;
+			gen_file = optarg;
+			break;
 		case '?':
 			printf("Unknown argument '%c'\n", c);
+			return EXIT_FAILURE;
+		}
+	}
+
+
+	if (!ctx)
+		return EXIT_FAILURE;
+
+	if (gen_code) {
+		if (!gen_test_path(gen_file)) {
+			fprintf(stderr, "Can't write to %s to generate file\n", gen_file);
 			return EXIT_FAILURE;
 		}
 	}
@@ -450,7 +436,7 @@ int main(int argc, char **argv)
 
 	if (!(search_device + search_channel + search_context + search_debug + search_buffer)) {
 		if (argc == 1) {
-			usage();
+			usage(MY_NAME, options, options_descriptions);
 			return EXIT_SUCCESS;
 		}
 		fprintf(stderr, "must specify one of -d, -c, -C, -B or -D.\n");
@@ -465,6 +451,11 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Too many options for searching for context attributes\n");
 			return EXIT_FAILURE;
 		}
+		if (gen_code && !attr_index) {
+			printf("When generating code for Context Attributes, must include specific attribute\n"
+					"-C [IIO_context_attribute]\n");
+			return EXIT_FAILURE;
+		}
 	} else if (search_device) {
 		/* -d [device] [attr] [value] */
 		if (argc >= optind + 1)
@@ -472,9 +463,14 @@ int main(int argc, char **argv)
 		if (argc >= optind + 2)
 			attr_index = optind + 1;
 		if (argc >= optind + 3)
-			wbuf = argv[optind + 2];
+			wbuf = argw[optind + 2];
 		if (argc >= optind + 4) {
 			fprintf(stderr, "Too many options for searching for device attributes\n");
+			return EXIT_FAILURE;
+		}
+		if (gen_code && !attr_index) {
+			printf("When generating code for device Attributes, must include specific attribute\n"
+					"-d [IIO_device] [IIO_device_attr] [value]\n");
 			return EXIT_FAILURE;
 		}
 	} else if (search_channel) {
@@ -486,9 +482,14 @@ int main(int argc, char **argv)
 		if (argc >= optind + 3)
 			attr_index = optind + 2;
 		if (argc >= optind + 4)
-			wbuf = argv[optind + 3];
+			wbuf = argw[optind + 3];
 		if (argc >= optind + 5) {
 			fprintf(stderr, "Too many options for searching for channel attributes\n");
+			return EXIT_FAILURE;
+		}
+		if (gen_code && !attr_index) {
+			printf("When generating code for Channel Attributes, must include specific attribute\n"
+					"-c [IIO_device] [IIO_device_channel] [IIO_channel_attr] [value]\n");
 			return EXIT_FAILURE;
 		}
 	} else if (search_buffer) {
@@ -498,11 +499,17 @@ int main(int argc, char **argv)
 		if (argc >= optind + 2)
 			attr_index = optind + 1;
 		if (argc >= optind + 3)
-			wbuf = argv[optind + 2];
+			wbuf = argw[optind + 2];
 		if (argc >= optind + 4) {
 			fprintf(stderr, "Too many options for searching for buffer attributes\n");
 			return EXIT_FAILURE;
 		}
+		if (gen_code && !attr_index) {
+			printf("When generating code for Buffer Attributes, must include specific attribute\n"
+					"-B [IIO_device] [IIO_buffer_attribute] [value]\n");
+			return EXIT_FAILURE;
+		}
+
 	} else if (search_debug) {
 		/* -D [device] [attribute] [value] */
 		if (argc >= optind + 1)
@@ -510,9 +517,14 @@ int main(int argc, char **argv)
 		if (argc >= optind + 2)
 			attr_index = optind + 1;
 		if (argc >= optind + 3)
-			wbuf = argv[optind + 2];
+			wbuf = argw[optind + 2];
 		if (argc >= optind + 4) {
 			fprintf(stderr, "Too many options for searching for device attributes\n");
+			return EXIT_FAILURE;
+		}
+		if (gen_code && !attr_index) {
+			printf("When generating code for Debug Attributes, must include specific attribute\n"
+					"-D [IIO_device] [IIO_debug_attribute] [value]\n");
 			return EXIT_FAILURE;
 		}
 	} else {
@@ -520,54 +532,55 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	if (device_index && !argv[device_index])
+	if (device_index && !argw[device_index])
 		return EXIT_FAILURE;
-	if (channel_index && !argv[channel_index])
+	if (channel_index && !argw[channel_index])
 		return EXIT_FAILURE;
-	if (attr_index && !argv[attr_index])
+	if (attr_index && !argw[attr_index])
 		return EXIT_FAILURE;
-	if (wbuf && !wbuf)
-		return EXIT_FAILURE;
-	if (wbuf && ((device_index && (!strcmp(".", argv[device_index]) ||
-				        strchr(argv[device_index], '*'))) ||
-		     (channel_index && (!strcmp(".", argv[channel_index]) ||
-					 strchr(argv[channel_index], '*'))) ||
-		     (attr_index && (!strcmp(".", argv[attr_index])  ||
-				      strchr(argv[attr_index], '*'))))) {
-		printf("can't write value with wildcard match\n");
+	if ((gen_code || wbuf) && ((device_index && (!strcmp(".", argw[device_index]) ||
+				        strchr(argw[device_index], '*'))) ||
+		     (channel_index && (!strcmp(".", argw[channel_index]) ||
+					 strchr(argw[channel_index], '*'))) ||
+		     (attr_index && (!strcmp(".", argw[attr_index])  ||
+				      strchr(argw[attr_index], '*'))))) {
+		printf("can't %s with wildcard match\n",
+				gen_code ? "generate code" : "write value");
 		return EXIT_FAILURE;
 	}
 
-	if (detect_context)
-		ctx = autodetect_context();
-	else if (backend == AUTO)
-		ctx = iio_create_context_from_uri(arg_uri);
-	else
-		ctx = iio_create_default_context();
-
-	if (!ctx) {
-		if (!detect_context) {
-			char buf[1024];
-
-			iio_strerror(errno, buf, sizeof(buf));
-			fprintf(stderr, "Unable to create IIO context: %s\n",
-					buf);
-		}
-
-		return EXIT_FAILURE;
+	if (gen_code) {
+		gen_start(gen_file);
 	}
 
 	if (search_context) {
 		unsigned int nb_ctx_attrs = iio_context_get_attrs_count(ctx);
 		if (!attr_index && nb_ctx_attrs > 0)
 			printf("IIO context with %u attributes:\n", nb_ctx_attrs);
+		if (!attr_index && !nb_ctx_attrs) {
+			printf("%s: Found context, but it has %u context attributes\n",
+					MY_NAME, nb_ctx_attrs);
+			found_err = true;
+		}
 
+		ctx_found = true;
 		for (i = 0; i < nb_ctx_attrs; i++) {
 			const char *key, *value;
+			ssize_t ret;
 
-			iio_context_get_attr(ctx, i, &key, &value);
-			if (!attr_index || str_match(key, argv[attr_index], ignore_case)) {
-				printf("%s: %s\n", key, value);
+			ret = iio_context_get_attr(ctx, i, &key, &value);
+			if (!ret) {
+				if (!attr_index || str_match(key, argw[attr_index], ignore_case)) {
+					attr_found = true;
+					printf("%s: %s\n", key, value);
+					gen_context_attr(key);
+				}
+			} else {
+				char *buf = xmalloc(BUF_SIZE, MY_NAME);
+				iio_strerror(errno, buf, BUF_SIZE);
+				fprintf(stderr, "Unable to get context attributes: %s (%zd)\n",
+						buf, ret);
+				free(buf);
 			}
 		}
 	}
@@ -581,24 +594,34 @@ int main(int argc, char **argv)
 		for (i = 0; i < nb_devices; i++) {
 			const struct iio_device *dev = iio_context_get_device(ctx, i);
 			const char *name = iio_device_get_name(dev);
+			const char *ch_name;
+			const char *dev_id = iio_device_get_id(dev);
 			unsigned int nb_attrs, nb_channels, j;
 
-
-			if (device_index && !str_match(name, argv[device_index], ignore_case))
+			if (device_index && !str_match(dev_id, argw[device_index], ignore_case)
+					&& !str_match(name, argw[device_index], ignore_case)) {
 				continue;
+			}
+			dev_found = true;
 
 			if ((search_device && !device_index) || (search_channel && !device_index) ||
 					(search_buffer && !device_index) || (search_debug && !device_index)) {
-				printf("\t%s:", iio_device_get_id(dev));
+				printf("\t%s", dev_id);
 				if (name)
-					printf(" %s", name);
-				printf(", ");
+					printf(", %s", name);
+				printf(": ");
 			}
 
 			if (search_channel && !device_index)
 				printf("found %u channels\n", iio_device_get_channels_count(dev));
 
 			nb_channels = iio_device_get_channels_count(dev);
+
+			if (search_channel && device_index && !channel_index && !nb_channels) {
+				printf("%s: Found %s device, but it has %u channels\n",
+						MY_NAME, argw[device_index], nb_channels);
+				found_err = true;
+			}
 			for (j = 0; j < nb_channels; j++) {
 				struct iio_channel *ch;
 				const char *type_name;
@@ -621,22 +644,27 @@ int main(int argc, char **argv)
 				else
 					type_name = "input";
 
-				name = iio_channel_get_name(ch);
+				ch_name = iio_channel_get_name(ch);
 				if (channel_index &&
 						!str_match(iio_channel_get_id(ch),
-						argv[channel_index], ignore_case) &&
-						(!name || (name &&
-						!str_match( name,argv[channel_index], ignore_case))))
+						argw[channel_index], ignore_case) &&
+						(!ch_name || !str_match(ch_name,argw[channel_index], ignore_case)))
 					continue;
 
+				channel_found = true;
 				if ((!scan_only && !channel_index) ||
 				    ( scan_only && iio_channel_is_scan_element(ch))) {
-					printf("dev '%s', channel '%s'",
-						iio_device_get_name(dev),
+					printf("%s ", iio_device_is_trigger(dev) ? "trig" : "dev");
+					if (name)
+						printf("'%s', ", name);
+					else
+						printf("'%s', ", dev_id);
+
+					printf("channel '%s'",
 						iio_channel_get_id(ch));
 
-					if (name)
-						printf(", id '%s'", name);
+					if (ch_name)
+						printf(", id '%s'", ch_name);
 
 					printf(" (%s", type_name);
 
@@ -672,39 +700,64 @@ int main(int argc, char **argv)
 				if (!channel_index)
 					printf("found %u channel-specific attributes\n",
 							nb_attrs);
+				/* search_channel & device_index are checked in L630 */
+				if(channel_index && !attr_index && !nb_attrs) {
+					printf("%s: Found %s device, but it has %u channel attributes\n",
+							MY_NAME, argw[device_index], nb_attrs);
+					found_err = true;
+				}
 
 				if (!nb_attrs || !channel_index)
 					continue;
 
 				for (k = 0; k < nb_attrs; k++) {
+					int ret;
 					const char *attr =
 						iio_channel_get_attr(ch, k);
 
 					if (attr_index &&
-						!str_match(attr, argv[attr_index],
+						!str_match(attr, argw[attr_index],
 							ignore_case))
 						continue;
-
-					dump_channel_attributes(dev, ch, attr, wbuf,
+					gen_dev(dev);
+					attr_found = true;
+					gen_ch(ch);
+					ret = dump_channel_attributes(dev, ch, attr, wbuf,
 								attr_index ? quiet : false);
+					if (wbuf && ret < 0)
+						write_err = true;
+					else if (ret < 0)
+						read_err = true;
 				}
 			}
 
 			nb_attrs = iio_device_get_attrs_count(dev);
 			if (search_device && !device_index)
 				printf("found %u device attributes\n", nb_attrs);
+			if (search_device && device_index && !attr_index && !nb_attrs) {
+				printf("%s: Found %s device, but it has %u device attributes\n",
+						MY_NAME, argw[device_index], nb_attrs);
+				found_err = true;
+			}
 
 			if (search_device && device_index && nb_attrs) {
 				unsigned int j;
+				int ret;
 				for (j = 0; j < nb_attrs; j++) {
 					const char *attr = iio_device_get_attr(dev, j);
 
 					if (attr_index &&
-					    !str_match(attr, argv[attr_index], ignore_case))
+					    !str_match(attr, argw[attr_index], ignore_case))
 						continue;
 
-					dump_device_attributes(dev, attr, wbuf,
+					gen_dev(dev);
+					attr_found = true;
+					ret = dump_device_attributes(dev, attr, wbuf,
 							       attr_index ? quiet : false);
+					if (wbuf && ret < 0)
+						write_err = true;
+					else if (ret < 0)
+						read_err = true;
 				}
 			}
 
@@ -712,17 +765,30 @@ int main(int argc, char **argv)
 
 			if (search_buffer && !device_index)
 				printf("found %u buffer attributes\n", nb_attrs);
+			if (search_buffer && device_index && !attr_index && !nb_attrs) {
+				printf("%s: Found %s device, but it has %u buffer attributes\n",
+						MY_NAME, argw[device_index], nb_attrs);
+				found_err = true;
+			}
 
 			if (search_buffer && device_index && nb_attrs) {
 				unsigned int j;
 
 				for (j = 0; j < nb_attrs; j++) {
+					int ret;
 					const char *attr = iio_device_get_buffer_attr(dev, j);
 
-					if ((attr_index && str_match(attr, argv[attr_index],
-								ignore_case)) || !attr_index)
-						dump_buffer_attributes(dev, attr, wbuf,
+					if ((attr_index && str_match(attr, argw[attr_index],
+								ignore_case)) || !attr_index) {
+						gen_dev(dev);
+						attr_found = true;
+						ret = dump_buffer_attributes(dev, attr, wbuf,
 									  attr_index ? quiet : false);
+						if (wbuf && ret < 0)
+							write_err = true;
+						else if (ret < 0)
+							read_err = true;
+					}
 				}
 
 			}
@@ -736,12 +802,20 @@ int main(int argc, char **argv)
 				unsigned int j;
 
 				for (j = 0; j < nb_attrs; j++) {
+					int ret;
 					const char *attr = iio_device_get_debug_attr(dev, j);
 
-					if ((attr_index && str_match(attr, argv[attr_index],
-								ignore_case)) || !attr_index)
-						dump_debug_attributes(dev, attr, wbuf,
+					if ((attr_index && str_match(attr, argw[attr_index],
+								ignore_case)) || !attr_index) {
+						gen_dev(dev);
+						attr_found = true;
+						ret = dump_debug_attributes(dev, attr, wbuf,
 								      attr_index ? quiet : false);
+						if (wbuf && ret < 0)
+							write_err = true;
+						else if (ret < 0)
+							read_err = true;
+					}
 				}
 
 			}
@@ -750,5 +824,34 @@ int main(int argc, char **argv)
 	}
 
 	iio_context_destroy(ctx);
+
+	if (gen_code)
+		gen_context_destroy();
+
+	if (!dev_found && device_index)
+		fprintf(stderr, "%s: Error : could not find device (%s)\n", MY_NAME, argw[device_index]);
+	else if (!ctx_found && search_context)
+		fprintf(stderr, "%s: Error : could not find Context Attributes\n", MY_NAME);
+	else if (!channel_found && channel_index) {
+		if (input_only)
+			fprintf(stderr, "%s: Error : could not find Input channel (%s)\n", MY_NAME, argw[channel_index]);
+		if (output_only)
+			fprintf(stderr, "%s: Error : could not find Output channel (%s)\n", MY_NAME, argw[channel_index]);
+		if (scan_only)
+			fprintf(stderr, "%s: Error : could not find Scan channel (%s)\n", MY_NAME, argw[channel_index]);
+		if (!input_only && !output_only && !scan_only)
+			fprintf(stderr, "%s: Error : could not find channel (%s)\n", MY_NAME, argw[channel_index]);
+	} else if (!attr_found && attr_index)
+		fprintf(stderr, "%s: Error : could not find attribute (%s)\n", MY_NAME, argw[attr_index]);
+
+	free_argw(argc, argw);
+
+	if ((!dev_found && device_index) || (!ctx_found && search_context) ||
+			(!channel_found && channel_index) || (!attr_found && attr_index))
+		return EXIT_FAILURE;
+
+	if (write_err || read_err || found_err)
+		return EXIT_FAILURE;
+
 	return EXIT_SUCCESS;
 }

@@ -36,11 +36,13 @@ namespace iio
         public void set_rate(ulong rate)
         {
             foreach (Attr each in attrs)
+            {
                 if (each.name.Equals("frequency"))
                 {
                     each.write((long) rate);
                     return;
                 }
+            }
             throw new Exception("Trigger has no frequency?");
         }
 
@@ -49,16 +51,22 @@ namespace iio
         public ulong get_rate()
         {
             foreach (Attr each in attrs)
+            {
                 if (each.name.Equals("frequency"))
+                {
                     return (ulong) each.read_long();
+                }
+            }
             throw new Exception("Trigger has no frequency?");
         }
 
+        /// <summary>Set Trigger.</summary>
         public new void set_trigger(Trigger trig)
         {
             throw new InvalidComObjectException("Device is already a trigger");
         }
 
+        /// <summary>Get trigger.</summary>
         public new Trigger get_trigger()
         {
             throw new InvalidComObjectException("Device is already a trigger");

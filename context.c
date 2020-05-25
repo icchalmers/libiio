@@ -24,11 +24,6 @@
 #include <errno.h>
 #include <string.h>
 
-#ifdef _WIN32
-#define LOCAL_BACKEND 0
-#define NETWORK_BACKEND 1
-#endif
-
 static const char xml_header[] = "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
 "<!DOCTYPE context ["
 "<!ELEMENT context (device | context-attribute)*>"
@@ -52,20 +47,25 @@ static const char xml_header[] = "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
 /* Returns a string containing the XML representation of this context */
 char * iio_context_create_xml(const struct iio_context *ctx)
 {
-	size_t len, *devices_len = NULL;
-	char *str, *ptr, **devices = NULL;
+	ssize_t len;
+	size_t *devices_len = NULL;
+	char *str, *ptr, *eptr, **devices = NULL;
 	unsigned int i;
 
-	len = strlen(ctx->name) + sizeof(xml_header) - 1 +
-		sizeof("<context name=\"\" ></context>");
-	if (ctx->description)
-		len += strlen(ctx->description) +
-			sizeof(" description=\"\"") - 1;
+	len = sizeof(xml_header) - 1;
+	len += strnlen(ctx->name, MAX_CTX_NAME);
+	len += sizeof("<context name=\"\" ></context>") - 1;
 
-	for (i = 0; i < ctx->nb_attrs; i++)
-		len += strlen(ctx->attrs[i]) +
-			strlen(ctx->values[i]) +
-			sizeof("<context-attribute name=\"\" value=\"\" />");
+	if (ctx->description) {
+		len += strnlen(ctx->description, MAX_CTX_DESC);
+		len += sizeof(" description=\"\"") - 1;
+	}
+
+	for (i = 0; i < ctx->nb_attrs; i++) {
+		len += strnlen(ctx->attrs[i], MAX_ATTR_NAME);
+		len += strnlen(ctx->values[i], MAX_ATTR_VALUE);
+		len += sizeof("<context-attribute name=\"\" value=\"\" />") - 1;
+	}
 
 	if (ctx->nb_devices) {
 		devices_len = malloc(ctx->nb_devices * sizeof(*devices_len));
@@ -88,37 +88,56 @@ char * iio_context_create_xml(const struct iio_context *ctx)
 		}
 	}
 
+	len++; /* room for terminating NULL */
 	str = malloc(len);
 	if (!str) {
 		errno = ENOMEM;
 		goto err_free_devices;
 	}
+	eptr = str + len;
+	ptr = str;
 
-	if (ctx->description) {
-		iio_snprintf(str, len, "%s<context name=\"%s\" "
-				"description=\"%s\" >",
-				xml_header, ctx->name, ctx->description);
-	} else {
-		iio_snprintf(str, len, "%s<context name=\"%s\" >",
-				xml_header, ctx->name);
+	if (len > 0) {
+		if (ctx->description) {
+			ptr += iio_snprintf(str, len, "%s<context name=\"%s\" "
+					"description=\"%s\" >",
+					xml_header, ctx->name, ctx->description);
+		} else {
+			ptr += iio_snprintf(str, len, "%s<context name=\"%s\" >",
+					xml_header, ctx->name);
+		}
+		len = eptr - ptr;
 	}
 
-	ptr = strrchr(str, '\0');
-
-	for (i = 0; i < ctx->nb_attrs; i++)
-		ptr += sprintf(ptr, "<context-attribute name=\"%s\" value=\"%s\" />",
+	for (i = 0; i < ctx->nb_attrs && len > 0; i++) {
+		ptr += iio_snprintf(ptr, len, "<context-attribute name=\"%s\" value=\"%s\" />",
 				ctx->attrs[i], ctx->values[i]);
-
+		len = eptr - ptr;
+	}
 
 	for (i = 0; i < ctx->nb_devices; i++) {
-		strcpy(ptr, devices[i]);
-		ptr += devices_len[i];
+		if (len > (ssize_t) devices_len[i]) {
+			memcpy(ptr, devices[i], devices_len[i]); /* Flawfinder: ignore */
+			ptr += devices_len[i];
+			len -= devices_len[i];
+		}
 		free(devices[i]);
 	}
 
 	free(devices);
 	free(devices_len);
-	strcpy(ptr, "</context>");
+
+	if (len > 0) {
+		ptr += iio_strlcpy(ptr, "</context>", len);
+		len -= sizeof("</context>") - 1;
+	}
+
+	if (len != 1) {
+		IIO_ERROR("Internal libIIO error: iio_context_create_xml str length issue\n");
+		free(str);
+		return NULL;
+	}
+
 	return str;
 
 err_free_devices:
@@ -308,23 +327,13 @@ struct iio_context * iio_create_context_from_uri(const char *uri)
 
 struct iio_context * iio_create_default_context(void)
 {
-	char *hostname = getenv("IIOD_REMOTE");
+	char *hostname = iio_getenv("IIOD_REMOTE");
+	struct iio_context * ctx;
 
 	if (hostname) {
-		struct iio_context *ctx;
-
 		ctx = iio_create_context_from_uri(hostname);
-		if (ctx)
-			return ctx;
-
-#ifdef WITH_NETWORK_BACKEND
-		/* If the environment variable is an empty string, we will
-		 * discover the server using ZeroConf */
-		if (strlen(hostname) == 0)
-			hostname = NULL;
-
-		return iio_create_network_context(hostname);
-#endif
+		free(hostname);
+		return ctx;
 	}
 
 	return iio_create_local_context();
@@ -405,6 +414,18 @@ int iio_context_add_attr(struct iio_context *ctx,
 		const char *key, const char *value)
 {
 	char **attrs, **values, *new_key, *new_val;
+	unsigned int i;
+
+	for (i = 0; i < ctx->nb_attrs; i++) {
+		if(!strcmp(ctx->attrs[i], key)) {
+			new_val = iio_strdup(value);
+			if (!new_val)
+				return -ENOMEM;
+			free(ctx->values[i]);
+			ctx->values[i] = new_val;
+			return 0;
+		}
+	}
 
 	attrs = realloc(ctx->attrs,
 			(ctx->nb_attrs + 1) * sizeof(*ctx->attrs));

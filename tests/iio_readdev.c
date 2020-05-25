@@ -1,19 +1,22 @@
 /*
- * libiio - Library for interfacing industrial I/O (IIO) devices
+ * iio_readdev - Part of the Industrial I/O (IIO) utilities
  *
  * Copyright (C) 2014 Analog Devices, Inc.
  * Author: Paul Cercueil <paul.cercueil@analog.com>
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
- * This library is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  * */
 
 #include <errno.h>
@@ -24,15 +27,14 @@
 #include <string.h>
 #include <errno.h>
 
+#include "iio_common.h"
+
 #define MY_NAME "iio_readdev"
 
 #define SAMPLES_PER_READ 256
 #define DEFAULT_FREQ_HZ  100
 
 static const struct option options[] = {
-	  {"help", no_argument, 0, 'h'},
-	  {"network", required_argument, 0, 'n'},
-	  {"uri", required_argument, 0, 'u'},
 	  {"trigger", required_argument, 0, 't'},
 	  {"buffer-size", required_argument, 0, 'b'},
 	  {"samples", required_argument, 0, 's' },
@@ -42,28 +44,14 @@ static const struct option options[] = {
 };
 
 static const char *options_descriptions[] = {
-	"Show this help and quit.",
-	"Use the network backend with the provided hostname.",
-	"Use the context with the provided URI.",
+	"[-t <trigger>] [-T <timeout-ms>] [-b <buffer-size>]"
+		"[-s <samples>] <iio_device> [<channel> ...]",
 	"Use the specified trigger.",
 	"Size of the capture buffer. Default is 256.",
 	"Number of samples to capture, 0 = infinite. Default is 0.",
 	"Buffer timeout in milliseconds. 0 = no timeout",
 	"Scan for available contexts and if only one is available use it.",
 };
-
-static void usage(void)
-{
-	unsigned int i;
-
-	printf("Usage:\n\t" MY_NAME " [-n <hostname>] [-t <trigger>] "
-			"[-T <timeout-ms>] [-b <buffer-size>] [-s <samples>] "
-			"<iio_device> [<channel> ...]\n\nOptions:\n");
-	for (i = 0; options[i].name; i++)
-		printf("\t-%c, --%s\n\t\t\t%s\n",
-					options[i].val, options[i].name,
-					options_descriptions[i]);
-}
 
 static struct iio_context *ctx;
 static struct iio_buffer *buffer;
@@ -84,6 +72,8 @@ static void quit_all(int sig)
 #ifdef _WIN32
 
 #include <windows.h>
+#include <io.h>
+#include <fcntl.h>
 
 BOOL WINAPI sig_handler_fn(DWORD dwCtrlType)
 {
@@ -162,7 +152,7 @@ static void setup_sig_handler(void)
 
 	/*
 	 * Async signals are difficult to handle and the IIO API is not signal
-	 * safe. Use a seperate thread and handle the signals synchronous so we
+	 * safe. Use a separate thread and handle the signals synchronous so we
 	 * can call iio_buffer_cancel().
 	 */
 
@@ -198,125 +188,75 @@ static ssize_t print_sample(const struct iio_channel *chn,
 	return (ssize_t) len;
 }
 
-static struct iio_context *scan(void)
-{
-	struct iio_scan_context *scan_ctx;
-	struct iio_context_info **info;
-	struct iio_context *ctx = NULL;
-	unsigned int i;
-	ssize_t ret;
-
-	scan_ctx = iio_create_scan_context(NULL, 0);
-	if (!scan_ctx) {
-		fprintf(stderr, "Unable to create scan context\n");
-		return NULL;
-	}
-
-	ret = iio_scan_context_get_info_list(scan_ctx, &info);
-	if (ret < 0) {
-		char err_str[1024];
-		iio_strerror(-ret, err_str, sizeof(err_str));
-		fprintf(stderr, "Scanning for IIO contexts failed: %s\n", err_str);
-		goto err_free_ctx;
-	}
-
-	if (ret == 0) {
-		printf("No IIO context found.\n");
-		goto err_free_info_list;
-	}
-
-	if (ret == 1) {
-		ctx = iio_create_context_from_uri(iio_context_info_get_uri(info[0]));
-	} else {
-		fprintf(stderr, "Multiple contexts found. Please select one using --uri:\n");
-
-		for (i = 0; i < (size_t) ret; i++) {
-			fprintf(stderr, "\t%d: %s [%s]\n", i,
-				iio_context_info_get_description(info[i]),
-				iio_context_info_get_uri(info[i]));
-		}
-	}
-
-err_free_info_list:
-	iio_context_info_list_free(info);
-err_free_ctx:
-	iio_scan_context_destroy(scan_ctx);
-
-	return ctx;
-}
-
 int main(int argc, char **argv)
 {
+	char **argw;
 	unsigned int i, nb_channels;
+	unsigned int nb_active_channels = 0;
 	unsigned int buffer_size = SAMPLES_PER_READ;
-	const char *arg_uri = NULL;
-	const char *arg_ip = NULL;
 	int c, option_index = 0;
 	struct iio_device *dev;
-	size_t sample_size;
+	ssize_t sample_size;
 	int timeout = -1;
-	bool scan_for_context = false;
+	ssize_t ret;
 
-	while ((c = getopt_long(argc, argv, "+hn:u:t:b:s:T:a",
+	argw = dup_argv(MY_NAME, argc, argv);
+
+	ctx = handle_common_opts(MY_NAME, argc, argw, options, options_descriptions);
+
+	while ((c = getopt_long(argc, argw, "+" COMMON_OPTIONS "t:b:s:T:",	/* Flawfinder: ignore */
 					options, &option_index)) != -1) {
 		switch (c) {
+		/* All these are handled in the common */
 		case 'h':
-			usage();
-			return EXIT_SUCCESS;
 		case 'n':
-			arg_ip = optarg;
-			break;
+		case 'x':
+		case 'S':
 		case 'u':
-			arg_uri = optarg;
-			break;
 		case 'a':
-			scan_for_context = true;
 			break;
 		case 't':
 			trigger_name = optarg;
 			break;
 		case 'b':
-			buffer_size = atoi(optarg);
+			buffer_size = sanitize_clamp("buffer size", optarg, 64, 4 * 1024 * 1024);
 			break;
 		case 's':
-			num_samples = atoi(optarg);
+			num_samples = sanitize_clamp("number of samples", optarg, 0, SIZE_MAX);
 			break;
 		case 'T':
-			timeout = atoi(optarg);
+			timeout = sanitize_clamp("timeout", optarg, 0, INT_MAX);
 			break;
 		case '?':
+			printf("Unknown argument '%c'\n", c);
 			return EXIT_FAILURE;
 		}
 	}
 
 	if (argc == optind) {
 		fprintf(stderr, "Incorrect number of arguments.\n\n");
-		usage();
+		usage(MY_NAME, options, options_descriptions);
 		return EXIT_FAILURE;
 	}
+
+	if (!ctx)
+		return EXIT_FAILURE;
 
 	setup_sig_handler();
 
-	if (scan_for_context)
-		ctx = scan();
-	else if (arg_uri)
-		ctx = iio_create_context_from_uri(arg_uri);
-	else if (arg_ip)
-		ctx = iio_create_network_context(arg_ip);
-	else
-		ctx = iio_create_default_context();
-
-	if (!ctx) {
-		fprintf(stderr, "Unable to create IIO context\n");
-		return EXIT_FAILURE;
+	if (timeout >= 0) {
+		ret = iio_context_set_timeout(ctx, timeout);
+		if (ret < 0) {
+			char err_str[1024];
+			iio_strerror(-(int)ret, err_str, sizeof(err_str));
+			fprintf(stderr, "IIO contexts set timeout failed : %s (%zd)\n",
+					err_str, ret);
+		}
 	}
 
-	if (timeout >= 0)
-		iio_context_set_timeout(ctx, timeout);
-
-	dev = iio_context_find_device(ctx, argv[optind]);
+	dev = iio_context_find_device(ctx, argw[optind]);
 	if (!dev) {
-		fprintf(stderr, "Device %s not found\n", argv[optind]);
+		fprintf(stderr, "Device %s not found\n", argw[optind]);
 		iio_context_destroy(ctx);
 		return EXIT_FAILURE;
 	}
@@ -341,33 +281,71 @@ int main(int argc, char **argv)
 		 * fail gracefully to remain compatible.
 		 */
 		if (iio_device_attr_write_longlong(trigger,
-				"sampling_frequency", DEFAULT_FREQ_HZ) < 0)
-			iio_device_attr_write_longlong(trigger,
+				"sampling_frequency", DEFAULT_FREQ_HZ) < 0) {
+			ret = iio_device_attr_write_longlong(trigger,
 				"frequency", DEFAULT_FREQ_HZ);
+			if (ret < 0) {
+				char buf[256];
+				iio_strerror(-(int)ret, buf, sizeof(buf));
+				fprintf(stderr, "sample rate not set : %s (%zd)\n",
+						buf, ret);
+			}
+		}
 
-		iio_device_set_trigger(dev, trigger);
+		ret = iio_device_set_trigger(dev, trigger);
+		if (ret < 0) {
+			char buf[256];
+			iio_strerror(-(int)ret, buf, sizeof(buf));
+			fprintf(stderr, "set triffer failed : %s (%zd)\n",
+					buf, ret);
+		}
 	}
 
 	nb_channels = iio_device_get_channels_count(dev);
 
 	if (argc == optind + 1) {
 		/* Enable all channels */
-		for (i = 0; i < nb_channels; i++)
-			iio_channel_enable(iio_device_get_channel(dev, i));
+		for (i = 0; i < nb_channels; i++) {
+			struct iio_channel *ch = iio_device_get_channel(dev, i);
+			if (!iio_channel_is_output(ch)) {
+				iio_channel_enable(ch);
+				nb_active_channels++;
+			}
+		}
 	} else {
 		for (i = 0; i < nb_channels; i++) {
 			unsigned int j;
 			struct iio_channel *ch = iio_device_get_channel(dev, i);
 			for (j = optind + 1; j < (unsigned int) argc; j++) {
 				const char *n = iio_channel_get_name(ch);
-				if (!strcmp(argv[j], iio_channel_get_id(ch)) ||
-						(n && !strcmp(n, argv[j])))
+				if ((!strcmp(argw[j], iio_channel_get_id(ch)) ||
+						(n && !strcmp(n, argw[j]))) &&
+						!iio_channel_is_output(ch)) {
 					iio_channel_enable(ch);
+					nb_active_channels++;
+				}
 			}
 		}
 	}
 
+	if (!nb_active_channels) {
+		fprintf(stderr, "No input channels found.\n");
+		return EXIT_FAILURE;
+	}
+
 	sample_size = iio_device_get_sample_size(dev);
+	/* Zero isn't normally an error code, but in this case it is an error */
+	if (sample_size == 0) {
+		fprintf(stderr, "Unable to get sample size, returned 0\n");
+		iio_context_destroy(ctx);
+		return EXIT_FAILURE;
+	} else if (sample_size < 0) {
+		char buf[256];
+		iio_strerror(errno, buf, sizeof(buf));
+		fprintf(stderr, "Unable to get sample size : %s\n", buf);
+		iio_context_destroy(ctx);
+		return EXIT_FAILURE;
+	}
 
 	buffer = iio_device_create_buffer(dev, buffer_size, false);
 	if (!buffer) {
@@ -378,12 +356,20 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
+#ifdef _WIN32
+	/*
+	 * Deactivate the translation for the stdout. Otherwise, bytes that have
+	 * the same value as line feed character (LF) will be translated to CR-LF.
+	 */
+	_setmode(_fileno(stdout), _O_BINARY);
+#endif
+
 	while (app_running) {
-		int ret = iio_buffer_refill(buffer);
+		ssize_t ret = iio_buffer_refill(buffer);
 		if (ret < 0) {
 			if (app_running) {
 				char buf[256];
-				iio_strerror(-ret, buf, sizeof(buf));
+				iio_strerror(-(int)ret, buf, sizeof(buf));
 				fprintf(stderr, "Unable to refill buffer: %s\n", buf);
 			}
 			break;
@@ -414,12 +400,19 @@ int main(int argc, char **argv)
 					quit_all(EXIT_SUCCESS);
 			}
 		} else {
-			iio_buffer_foreach_sample(buffer, print_sample, NULL);
+			ret = iio_buffer_foreach_sample(buffer, print_sample, NULL);
+			if (ret < 0) {
+				char buf[256];
+				iio_strerror(-(int)ret, buf, sizeof(buf));
+				fprintf(stderr, "buffer processing failed : %s (%zi)\n",
+						buf, ret);
+			}
 		}
 	}
 
 err_destroy_buffer:
 	iio_buffer_destroy(buffer);
 	iio_context_destroy(ctx);
+	free_argw(argc, argw);
 	return exit_code;
 }

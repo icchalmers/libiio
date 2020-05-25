@@ -1,19 +1,22 @@
 /*
- * libiio - Library for interfacing industrial I/O (IIO) devices
+ * iio_genxml - Part of the Industrial I/O (IIO) utilities
  *
  * Copyright (C) 2014 Analog Devices, Inc.
  * Author: Paul Cercueil <paul.cercueil@analog.com>
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
- * This library is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  * */
 
 #include <getopt.h>
@@ -21,109 +24,65 @@
 #include <stdio.h>
 #include <string.h>
 
-#ifndef _WIN32
-#define _strdup strdup
-#endif
+#include "iio_common.h"
 
 #define MY_NAME "iio_genxml"
 
-enum backend {
-	LOCAL,
-	XML,
-	NETWORK,
-	AUTO,
-};
-
 static const struct option options[] = {
-	  {"help", no_argument, 0, 'h'},
-	  {"xml", required_argument, 0, 'x'},
-	  {"network", required_argument, 0, 'n'},
-	  {"uri", required_argument, 0, 'u'},
-	  {0, 0, 0, 0},
+	{0, 0, 0, 0},
 };
 
 static const char *options_descriptions[] = {
-	"Show this help and quit.",
-	"Use the XML backend with the provided XML file.",
-	"Use the network backend with the provided hostname.",
-	"Use the context with the provided URI.",
+	"\t[-x <xml_file>]\n"
+		"\t\t\t\t[-u <uri>]\n"
+		"\t\t\t\t[-n <hostname>]",
 };
-
-static void usage(void)
-{
-	unsigned int i;
-
-	printf("Usage:\n\t" MY_NAME " [-x <xml_file>]\n\t"
-			MY_NAME " [-u <uri>]\n\t"
-			MY_NAME " [-n <hostname>]\n\nOptions:\n");
-	for (i = 0; options[i].name; i++)
-		printf("\t-%c, --%s\n\t\t\t%s\n",
-					options[i].val, options[i].name,
-					options_descriptions[i]);
-}
 
 int main(int argc, char **argv)
 {
+	char **argw;
 	char *xml;
+	const char *tmp;
 	struct iio_context *ctx;
 	int c, option_index = 0;
-	const char *arg_uri = NULL;
-	const char *arg_xml = NULL;
-	const char *arg_ip = NULL;
-	enum backend backend = LOCAL;
+	size_t xml_len;
 
-	while ((c = getopt_long(argc, argv, "+hn:x:u:",
+	argw = dup_argv(MY_NAME, argc, argv);
+	ctx = handle_common_opts(MY_NAME, argc, argw, options, options_descriptions);
+
+	while ((c = getopt_long(argc, argv, "+" COMMON_OPTIONS,  /* Flawfinder: ignore */
 					options, &option_index)) != -1) {
 		switch (c) {
+		/* All these are handled in the common */
 		case 'h':
-			usage();
-			return EXIT_SUCCESS;
 		case 'n':
-			if (backend != LOCAL) {
-				fprintf(stderr, "-x and -n are mutually exclusive\n");
-				return EXIT_FAILURE;
-			}
-			backend = NETWORK;
-			arg_ip = optarg;
-			break;
 		case 'x':
-			if (backend != LOCAL) {
-				fprintf(stderr, "-x and -n are mutually exclusive\n");
-				return EXIT_FAILURE;
-			}
-			backend = XML;
-			arg_xml = optarg;
-			break;
+		case 'S':
 		case 'u':
-			arg_uri = optarg;
-			backend = AUTO;
+		case 'a':
 			break;
 		case '?':
+			printf("Unknown argument '%c'\n", c);
 			return EXIT_FAILURE;
 		}
 	}
 
 	if (optind != argc) {
 		fprintf(stderr, "Incorrect number of arguments.\n\n");
-		usage();
+		usage(MY_NAME, options, options_descriptions);
 		return EXIT_FAILURE;
 	}
 
-	if (backend == AUTO) 
-		ctx = iio_create_context_from_uri(arg_uri);
-	else if (backend == XML)
-		ctx = iio_create_xml_context(arg_xml);
-	else if (backend == NETWORK)
-		ctx = iio_create_network_context(arg_ip);
-	else
-		ctx = iio_create_default_context();
+	if (!ctx)
+		return EXIT_FAILURE;
 
-	if (!ctx) {
-		fprintf(stderr, "Unable to create IIO context\n");
+	tmp = iio_context_get_xml(ctx);
+	if (!tmp) {
+		iio_context_destroy(ctx);
 		return EXIT_FAILURE;
 	}
-
-	xml = _strdup(iio_context_get_xml(ctx));
+	xml_len = strnlen(tmp, (size_t)-1);
+	xml = cmn_strndup(tmp, xml_len);
 	if (!xml) {
 		iio_context_destroy(ctx);
 		return EXIT_FAILURE;
@@ -133,13 +92,14 @@ int main(int argc, char **argv)
 
 	iio_context_destroy(ctx);
 
-	ctx = iio_create_xml_context_mem(xml, strlen(xml));
+	ctx = iio_create_xml_context_mem(xml, xml_len);
 	if (!ctx) {
 		fprintf(stderr, "Unable to re-generate context\n");
 	} else {
 		printf("Context re-creation from generated XML succeeded!\n");
 		iio_context_destroy(ctx);
 	}
+	free_argw(argc, argw);
 	free(xml);
 	return EXIT_SUCCESS;
 }

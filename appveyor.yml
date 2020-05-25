@@ -38,10 +38,12 @@ build_script:
     - C:\msys64\usr\bin\bash -lc "pwd"
     - mkdir C:\projects\libiio\build-mingw-win32\"%configuration%"& cd C:\projects\libiio\build-mingw-win32\"%configuration%"
     - C:\msys64\usr\bin\bash -lc "pwd"
+    # TODO: Check when the latest pacman version is fixed and revert this commit.
+    - C:\msys64\usr\bin\bash -lc "pacman --noconfirm -U http://repo.msys2.org/msys/x86_64/pacman-5.2.1-6-x86_64.pkg.tar.xz"
+    - C:\msys64\usr\bin\bash -lc "pacman --noconfirm -Syu"
     - C:\msys64\usr\bin\bash -lc "pacman -Rs --noconfirm mingw-w64-i686-gcc-ada mingw-w64-i686-gcc-fortran mingw-w64-i686-gcc-libgfortran mingw-w64-i686-gcc-objc"
     - C:\msys64\usr\bin\bash -lc "rm /mingw32/etc/gdbinit"
     - C:\msys64\usr\bin\bash -lc "pacman --noconfirm -Sy  mingw-w64-i686-gcc mingw-w64-i686-libusb mingw-w64-i686-curl mingw-w64-i686-cmake mingw-w64-i686-libxml2 mingw-w64-i686-pkg-config mingw-w64-i686-libzip"
-    - C:\msys64\usr\bin\bash -lc "pacman --noconfirm -Syu"
     # Newer llvm breaks doxygen, use old version for now
     - C:\msys64\usr\bin\bash -lc "pacman -U --noconfirm http://repo.msys2.org/mingw/i686/mingw-w64-i686-llvm-5.0.0-3-any.pkg.tar.xz http://repo.msys2.org/mingw/i686/mingw-w64-i686-clang-5.0.0-3-any.pkg.tar.xz"
     # set the specific version of doxygen (06-Jun-2018), need to look at this later.
@@ -50,7 +52,7 @@ build_script:
     # Download a 32-bit version of windres.exe
     - appveyor DownloadFile http://swdownloads.analog.com/cse/build/windres.exe.gz -FileName C:\windres.exe.gz
     - C:\msys64\usr\bin\bash -lc "cd /c ; gunzip windres.exe.gz"
-    - C:\msys64\usr\bin\bash -lc "cmake -G '%GENERATOR%' -DCMAKE_RC_COMPILER=/c/windres.exe -DGIT_EXECUTABLE=C:/Program\ Files/Git/cmd/git.exe -DCMAKE_BUILD_TYPE=%configuration% -DCMAKE_INSTALL_PREFIX=/mingw32 -DCMAKE_C_COMPILER:FILEPATH=/mingw32/bin/i686-w64-mingw32-gcc.exe -DCMAKE_CXX_COMPILER:FILEPATH=/mingw32/bin/i686-w64-mingw32-g++.exe -DCSHARP_BINDINGS:BOOL=OFF -DPKG_CONFIG_EXECUTABLE:FILEPATH=/mingw32/bin/pkg-config.exe -DENABLE_IPV6:BOOL=OFF -DPYTHON_BINDINGS:BOOL=OFF -DLIBSERIALPORT_LIBRARIES=/c/libs/32/libserialport.dll.a -DLIBSERIALPORT_INCLUDE_DIR=/c/include -DLIBLZMA_LIBRARY=c:/msys64/mingw32/lib/liblzma.dll.a /c/projects/libiio && make -j3"
+    - C:\msys64\usr\bin\bash -lc "cmake -G '%GENERATOR%' -DCMAKE_RC_COMPILER=/c/windres.exe -DGIT_EXECUTABLE=C:/Program\ Files/Git/cmd/git.exe -DCMAKE_BUILD_TYPE=%configuration% -DCMAKE_INSTALL_PREFIX=/mingw32 -DCMAKE_C_COMPILER:FILEPATH=/mingw32/bin/i686-w64-mingw32-gcc.exe -DCMAKE_CXX_COMPILER:FILEPATH=/mingw32/bin/i686-w64-mingw32-g++.exe -DPKG_CONFIG_EXECUTABLE:FILEPATH=/mingw32/bin/pkg-config.exe -DENABLE_IPV6:BOOL=OFF -DLIBSERIALPORT_LIBRARIES=/c/libs/32/libserialport.dll.a -DLIBSERIALPORT_INCLUDE_DIR=/c/include -DLIBLZMA_LIBRARY=c:/msys64/mingw32/lib/liblzma.dll.a /c/projects/libiio && make -j3"
 
     # MinGW 64 bit
     - cd c:\projects\libiio
@@ -62,13 +64,14 @@ build_script:
     - C:\msys64\usr\bin\bash -lc "pacman -Rs --noconfirm mingw-w64-x86_64-gcc-ada mingw-w64-x86_64-gcc-fortran mingw-w64-x86_64-gcc-libgfortran mingw-w64-x86_64-gcc-objc"
     - C:\msys64\usr\bin\bash -lc "rm /mingw64/etc/gdbinit"
     - C:\msys64\usr\bin\bash -lc "pacman --noconfirm -Sy mingw-w64-x86_64-gcc mingw-w64-x86_64-libusb mingw-w64-x86_64-curl mingw-w64-x86_64-cmake mingw-w64-x86_64-libxml2 mingw-w64-x86_64-pkg-config mingw-w64-x86_64-libzip"
-    - C:\msys64\usr\bin\bash -lc "pacman --noconfirm -Syu"
+    - C:\msys64\usr\bin\bash -lc "pacman --noconfirm -Sy pacman"
+    - C:\msys64\usr\bin\bash -lc "pacman --noconfirm -Su"
     # Newer llvm breaks doxygen, use old version for now
     - C:\msys64\usr\bin\bash -lc "pacman -U --noconfirm http://repo.msys2.org/mingw/x86_64/mingw-w64-x86_64-llvm-5.0.0-3-any.pkg.tar.xz http://repo.msys2.org/mingw/x86_64/mingw-w64-x86_64-clang-5.0.0-3-any.pkg.tar.xz"
     # set the specific version of doxygen, need to look at this later.
     - C:\msys64\usr\bin\bash -lc "pacman -U --noconfirm http://repo.msys2.org/mingw/x86_64/mingw-w64-x86_64-doxygen-1.8.14-2-any.pkg.tar.xz"
     - C:\msys64\usr\bin\bash -lc "pacman -U --noconfirm http://repo.msys2.org/mingw/x86_64/mingw-w64-x86_64-graphviz-2.40.1-4-any.pkg.tar.xz"
-    - C:\msys64\usr\bin\bash -lc "cmake -G '%GENERATOR%' -DCMAKE_BUILD_TYPE=%configuration% -DCMAKE_INSTALL_PREFIX=/mingw64 -DCMAKE_C_COMPILER:FILEPATH=/mingw64/bin/x86_64-w64-mingw32-gcc.exe -DCMAKE_CXX_COMPILER:FILEPATH=/mingw64/bin/x86_64-w64-mingw32-g++.exe -DCSHARP_BINDINGS:BOOL=OFF -DPKG_CONFIG_EXECUTABLE:FILEPATH=/mingw64/bin/pkg-config.exe -DENABLE_IPV6:BOOL=OFF -DPYTHON_BINDINGS:BOOL=OFF -DLIBSERIALPORT_LIBRARIES=/c/libs/64/libserialport.dll.a -DLIBSERIALPORT_INCLUDE_DIR=/c/include /c/projects/libiio && make -j3"
+    - C:\msys64\usr\bin\bash -lc "cmake -G '%GENERATOR%' -DCMAKE_BUILD_TYPE=%configuration% -DCMAKE_INSTALL_PREFIX=/mingw64 -DCMAKE_C_COMPILER:FILEPATH=/mingw64/bin/x86_64-w64-mingw32-gcc.exe -DCMAKE_CXX_COMPILER:FILEPATH=/mingw64/bin/x86_64-w64-mingw32-g++.exe -DPKG_CONFIG_EXECUTABLE:FILEPATH=/mingw64/bin/pkg-config.exe -DENABLE_IPV6:BOOL=OFF -DLIBSERIALPORT_LIBRARIES=/c/libs/64/libserialport.dll.a -DLIBSERIALPORT_INCLUDE_DIR=/c/include /c/projects/libiio && make -j3"
 
     # Move the tests folder
     - cd c:\projects\libiio
@@ -86,20 +89,19 @@ build_script:
     - mkdir build-win32
     - cd build-win32
     - set MCS_EXECUTABLE_PATH="C:\Windows\Microsoft.NET\Framework\v4.0.30319"
-    - cmake -G "%GENERATOR%" -DCMAKE_BUILD_TYPE:STRING="%configuration%" -DENABLE_IPV6:BOOL=OFF -DCMAKE_SYSTEM_PREFIX_PATH="C:" -DPYTHON_BINDINGS:BOOL=ON -DLIBXML2_LIBRARIES="C:\\libs\\32\\libxml2.lib" -DLIBUSB_LIBRARIES="C:\\libs\\32\\libusb-1.0.lib" -DLIBSERIALPORT_LIBRARIES="C:\\libs\\32\\libserialport.dll.a" ..
+    - cmake -G "%GENERATOR%" -DCMAKE_BUILD_TYPE:STRING="%configuration%" -DENABLE_IPV6:BOOL=OFF -DCMAKE_SYSTEM_PREFIX_PATH="C:" -DCSHARP_BINDINGS:BOOL=ON -DPYTHON_BINDINGS:BOOL=ON -DLIBXML2_LIBRARIES="C:\\libs\\32\\libxml2.lib" -DLIBUSB_LIBRARIES="C:\\libs\\32\\libusb-1.0.lib" -DLIBSERIALPORT_LIBRARIES="C:\\libs\\32\\libserialport.dll.a" ..
     - cmake --build . --config %configuration%
 
     - cd bindings/python
-    - python.exe setup.py bdist_wininst
-    - ps: Get-ChildItem dist\libiio-*.exe | Rename-Item -NewName "libiio-py37-win32.exe"
-    - ps: cp dist\*.exe .
-    - ps: rm dist\*.exe
+    - python.exe setup.py sdist
+    - ps: Get-ChildItem dist\libiio-*.tar.gz | Rename-Item -NewName "libiio-py37-win32.tar.gz"
+    - ps: cp dist\*.tar.gz .
+    - ps: rm dist\*.tar.gz
     - set PATH=C:\\Python36;C:\\Python36\\libs;%PATH%
-    - python.exe setup.py bdist_wininst
-    - ls dist
-    - ps: Get-ChildItem dist\libiio-*.exe | Rename-Item -NewName "libiio-py36-win32.exe"
-    - ps: cp dist\*.exe .
-    - ps: rm dist\*.exe
+    - python.exe setup.py sdist
+    - ps: Get-ChildItem dist\libiio-*.tar.gz | Rename-Item -NewName "libiio-py36-win32.tar.gz"
+    - ps: cp dist\*.tar.gz .
+    - ps: rm dist\*.tar.gz
 
     #MSVC 64 bit
     - set PATH=C:\Python37-x64;C:\\Python37-x64\\libs;%PATH%
@@ -107,19 +109,19 @@ build_script:
     - echo "Running cmake for Visual Studio 64 bit... "
     - mkdir build-win64
     - cd build-win64
-    - cmake -G "%GENERATOR% Win64" -DCMAKE_BUILD_TYPE:STRING="%configuration%" -DENABLE_IPV6:BOOL=OFF -DCMAKE_SYSTEM_PREFIX_PATH="C:" -DPYTHON_BINDINGS:BOOL=ON -DLIBXML2_LIBRARIES="C:\\libs\\64\\libxml2.lib" -DLIBUSB_LIBRARIES="C:\\libs\\64\\libusb-1.0.lib" -DLIBSERIALPORT_LIBRARIES="C:\\libs\\64\\libserialport.dll.a" ..
+    - cmake -G "%GENERATOR% Win64" -DCMAKE_BUILD_TYPE:STRING="%configuration%" -DENABLE_IPV6:BOOL=OFF -DCMAKE_SYSTEM_PREFIX_PATH="C:" -DCSHARP_BINDINGS:BOOL=ON -DPYTHON_BINDINGS:BOOL=ON -DLIBXML2_LIBRARIES="C:\\libs\\64\\libxml2.lib" -DLIBUSB_LIBRARIES="C:\\libs\\64\\libusb-1.0.lib" -DLIBSERIALPORT_LIBRARIES="C:\\libs\\64\\libserialport.dll.a" ..
     - cmake --build . --config %configuration%
 
     - cd bindings/python
-    - python.exe setup.py bdist_wininst
-    - ps: Get-ChildItem dist\libiio-*.exe | Rename-Item -NewName "libiio-py37-amd64.exe"
-    - ps: cp dist\*.exe .
-    - ps: rm dist\*.exe
+    - python.exe setup.py sdist
+    - ps: Get-ChildItem dist\libiio-*.tar.gz | Rename-Item -NewName "libiio-py37-amd64.tar.gz"
+    - ps: cp dist\*.tar.gz .
+    - ps: rm dist\*.tar.gz
     - set PATH=C:\Python36-x64;C:\\Python36-x64\\libs;%PATH%
-    - python.exe setup.py bdist_wininst
-    - ps: Get-ChildItem dist\libiio-*.exe | Rename-Item -NewName "libiio-py36-amd64.exe"
-    - ps: cp dist\*.exe .
-    - ps: rm dist\*.exe
+    - python.exe setup.py sdist
+    - ps: Get-ChildItem dist\libiio-*.tar.gz | Rename-Item -NewName "libiio-py36-amd64.tar.gz"
+    - ps: cp dist\*.tar.gz .
+    - ps: rm dist\*.tar.gz
     - cd c:\projects\libiio\build-win64
 
     #Create the installer
@@ -138,8 +140,8 @@ build_script:
     - copy build-win64\Release\libiio.* c:\%ARCHIVE_NAME%\MS64
     - copy build-win32\bindings\csharp\libiio-sharp.dll c:\%ARCHIVE_NAME%\MS32
     - copy build-win64\bindings\csharp\libiio-sharp.dll c:\%ARCHIVE_NAME%\MS64
-    - copy build-win32\bindings\python\*.exe c:\%ARCHIVE_NAME%\MS32
-    - copy build-win64\bindings\python\*.exe c:\%ARCHIVE_NAME%\MS64
+    - copy build-win32\bindings\python\*.tar.gz c:\%ARCHIVE_NAME%\MS32
+    - copy build-win64\bindings\python\*.tar.gz c:\%ARCHIVE_NAME%\MS64
     - copy build-mingw-win32\Release\libiio.* c:\%ARCHIVE_NAME%\MinGW32
     - copy build-mingw-win64\Release\libiio.* c:\%ARCHIVE_NAME%\MinGW64
     - del c:\%ARCHIVE_NAME%\MinGW32\libiio.iss
@@ -168,14 +170,6 @@ build_script:
     
     - copy "c:\Program Files (x86)\Microsoft Visual Studio 12.0\VC\redist\x86\Microsoft.VC120.CRT\msvcr120.dll" c:\%ARCHIVE_NAME%\MS32
     - copy "c:\Program Files (x86)\Microsoft Visual Studio 12.0\VC\redist\x64\Microsoft.VC120.CRT\msvcr120.dll" c:\%ARCHIVE_NAME%\MS64
-    - xcopy /S bindings\matlab c:\%ARCHIVE_NAME%\MS32\matlab\
-    - xcopy /S bindings\matlab c:\%ARCHIVE_NAME%\MS64\matlab\
-    - xcopy /S bindings\matlab c:\%ARCHIVE_NAME%\MinGW32\matlab\
-    - xcopy /S bindings\matlab c:\%ARCHIVE_NAME%\MinGW64\matlab\
-    - del c:\%ARCHIVE_NAME%\MS32\matlab\CMakeLists.txt
-    - del c:\%ARCHIVE_NAME%\MS64\matlab\CMakeLists.txt
-    - del c:\%ARCHIVE_NAME%\MinGW32\matlab\CMakeLists.txt
-    - del c:\%ARCHIVE_NAME%\MinGW64\matlab\CMakeLists.txt
     
     - copy c:\projects\libiio\CI\travis\zip.txt c:\%ARCHIVE_NAME%\README.txt
     - 7z a "c:\libiio.zip" c:\%ARCHIVE_NAME%

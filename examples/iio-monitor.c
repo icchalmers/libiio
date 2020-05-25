@@ -4,40 +4,53 @@
  * Copyright (C) 2014 Analog Devices, Inc.
  * Author: Paul Cercueil <paul.cercueil@analog.com>
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
- * This library is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  * */
 
-#define _BSD_SOURCE
-#define _GNU_SOURCE
-#define _DEFAULT_SOURCE
+#ifndef _BSD_SOURCE
+#define _BSD_SOURCE 1
+#endif
 
-#include <cdk/cdk.h>
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
+#endif
+
+#include <cdk.h>
 #include <locale.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <unistd.h>
 #include <string.h>
-
-#ifdef __APPLE__
-#include <iio/iio.h>
-#else
 #include <iio.h>
+
+#ifdef _MSC_BUILD
+#define inline __inline
+#define iio_snprintf sprintf_s
+#else
+#define iio_snprintf snprintf
 #endif
 
 #define ARRAY_SIZE(x) (sizeof(x) ? sizeof(x) / sizeof((x)[0]) : 0)
 
-#define RED	020
-#define YELLOW	040
-#define BLUE	050
+#define RED	020u
+#define YELLOW	040u
+#define BLUE	050u
 
 static int selected = -1;
 
@@ -60,30 +73,71 @@ static bool is_valid_channel(struct iio_channel *chn)
 		 channel_has_attr(chn, "input"));
 }
 
+static void err_str(int ret)
+{
+	char buf[256];
+	iio_strerror(-ret, buf, sizeof(buf));
+	fprintf(stderr, "Error during read: %s (%d)\n", buf, ret);
+}
+
 static double get_channel_value(struct iio_channel *chn)
 {
-	char *old_locale;
+	char *old_locale, *end;
 	char buf[1024];
 	double val;
+	int ret;
 
 	old_locale = strdup(setlocale(LC_NUMERIC, NULL));
 	setlocale(LC_NUMERIC, "C");
 
 	if (channel_has_attr(chn, "input")) {
-		iio_channel_attr_read(chn, "input", buf, sizeof(buf));
-		val = strtod(buf, NULL);
+		ret = iio_channel_attr_read(chn, "input", buf, sizeof(buf));
+		if (ret < 0) {
+			err_str(ret);
+			val = 0;
+		} else {
+			errno = 0;
+			val = strtod(buf, &end);
+			if (buf == end || errno == ERANGE) {
+				fprintf(stderr, "issue decoding '%s' to decimal\n", buf);
+				val = 0;
+			}
+		}
 	} else {
-		iio_channel_attr_read(chn, "raw", buf, sizeof(buf));
-		val = strtod(buf, NULL);
-
+		ret = iio_channel_attr_read(chn, "raw", buf, sizeof(buf));
+		if (ret < 0) {
+			err_str(ret);
+			val = 0;
+		} else {
+			errno = 0;
+			val = strtod(buf, &end);
+			if (buf == end || errno == ERANGE) {
+				fprintf(stderr, "issue decoding '%s' to decimal\n", buf);
+				val = 0;
+			}
+		}
 		if (channel_has_attr(chn, "offset")) {
-			iio_channel_attr_read(chn, "offset", buf, sizeof(buf));
-			val += strtod(buf, NULL);
+			ret = iio_channel_attr_read(chn, "offset", buf, sizeof(buf));
+			if (ret < 0)
+				err_str(ret);
+			else {
+				errno = 0;
+				val += strtod(buf, &end);
+				if (buf == end || errno == ERANGE)
+					fprintf(stderr, "issue decoding '%s' to decimal\n", buf);
+			}
 		}
 
 		if (channel_has_attr(chn, "scale")) {
-			iio_channel_attr_read(chn, "scale", buf, sizeof(buf));
-			val *= strtod(buf, NULL);
+			ret = iio_channel_attr_read(chn, "scale", buf, sizeof(buf));
+			if (ret < 0)
+				err_str(ret);
+			else {
+				errno = 0;
+				val *= strtod(buf, &end);
+				if (buf == end || errno == ERANGE)
+					fprintf(stderr, "issue decoding '%s' to decimal\n", buf);
+			}
 		}
 	}
 
@@ -101,7 +155,7 @@ static struct {
 	{ "power",	"W" },
 	{ "temp",	"°C" },
 	{ "voltage",	"V" },
-	{ 0, },
+	{ NULL, NULL },
 };
 
 static const char *id_to_unit(const char *id)
@@ -127,9 +181,12 @@ static void * read_thd(void *d)
 		unsigned int i, nb_channels, nb = 0;
 		char buf[1024];
 		chtype *str;
+		struct timespec wait;
 		(void) row; /* Prevent warning */
 
-		usleep(100000);
+		wait.tv_sec = 0;
+		wait.tv_nsec = (100000 * 1000);
+		nanosleep(&wait, &wait);
 
 		if (selected < 0)
 			continue;
@@ -144,7 +201,7 @@ static void * read_thd(void *d)
 
 		werase(right);
 
-		sprintf(buf, "</B>Device selected: </%u>%s<!%u><!B>",
+		iio_snprintf(buf, sizeof(buf), "</B>Device selected: </%u>%s<!%u><!B>",
 				RED, name, RED);
 		str = char2Chtype(buf, &len, &align);
 		writeChtype(right, 2, line, str, HORIZONTAL, 0, len);
@@ -167,14 +224,14 @@ static void * read_thd(void *d)
 				name = id;
 			unit = id_to_unit(id);
 
-			sprintf(buf, "</%u></B>%s<!B><!%u>",
+			iio_snprintf(buf, sizeof(buf), "</%u></B>%s<!B><!%u>",
 					BLUE, name, BLUE);
 			str = char2Chtype(buf, &len, &align);
 			writeChtype(right, 2, line, str,
 					HORIZONTAL, 0, len);
 			freeChtype(str);
 
-			sprintf(buf, "</%u></B>%.3lf %s<!B><!%u>",
+			iio_snprintf(buf, sizeof(buf), "</%u></B>%.3lf %s<!B><!%u>",
 					YELLOW, get_channel_value(chn), unit,
 					YELLOW);
 			str = char2Chtype(buf, &len, &align);
@@ -199,11 +256,11 @@ static struct iio_context *show_contexts_screen(void)
 	struct iio_context *ctx = NULL;
 	struct iio_scan_context *scan_ctx;
 	struct iio_context_info **info;
-	unsigned int num_contexts;
+	int num_contexts;
 	CDKSCREEN *screen;
 	CDKSCROLL *list;
 	const char *uri;
-	unsigned int i;
+	int i;
 	bool free_uri;
 	char **items;
 	int ret;
@@ -213,6 +270,10 @@ static struct iio_context *show_contexts_screen(void)
 		return NULL;
 
 	screen = initCDKScreen(win);
+	if (!screen) {
+		fprintf(stderr, "out of memory\n");
+		goto scan_err;
+	}
 
 	do {
 		ret = iio_scan_context_get_info_list(scan_ctx, &info);
@@ -222,20 +283,31 @@ static struct iio_context *show_contexts_screen(void)
 		num_contexts = ret;
 
 		items = calloc(num_contexts + 1, sizeof(*items));
+		if (!items) {
+			fprintf(stderr, "calloc failed, out of memory\n");
+			break;
+		}
 
 		for (i = 0; i < num_contexts; i++) {
-			 asprintf(&items[i], "</%d>%s<!%d> </%d>[%s]<!%d>", YELLOW,
+			ret = asprintf(&items[i], "</%d>%s<!%d> </%d>[%s]<!%d>", YELLOW,
 				iio_context_info_get_description(info[i]),
 				YELLOW, BLUE,
 				iio_context_info_get_uri(info[i]),
 				BLUE);
+			if (ret < 0) {
+				fprintf(stderr, "asprintf failed, out of memory?\n");
+				break;
+			}
+		}
+		if (ret < 0) {
+			break;
 		}
 
 		items[i] = "Enter location";
 
 		list = newCDKScroll(screen, LEFT, TOP, RIGHT, 0, 0,
 				"\n Select a IIO context to use:\n",
-				items, num_contexts + 1, TRUE,
+				(CDK_CSTRING2) items, num_contexts + 1, TRUE,
 				A_BOLD | A_REVERSE, TRUE, FALSE);
 
 		drawCDKScroll(list, TRUE);
@@ -257,7 +329,7 @@ static struct iio_context *show_contexts_screen(void)
 			ctx = iio_create_context_from_uri(uri);
 			if (ctx == NULL) {
 				char *msg[] = { "</16>Failed to create IIO context.<!16>" };
-				popupLabel(screen, msg, 1);
+				popupLabel(screen, (CDK_CSTRING2)msg, 1);
 			}
 
 			if (free_uri)
@@ -274,6 +346,7 @@ static struct iio_context *show_contexts_screen(void)
 
 	destroyCDKScreen(screen);
 
+scan_err:
 	iio_scan_context_destroy(scan_ctx);
 
 	return ctx;
@@ -289,11 +362,23 @@ static void show_main_screen(struct iio_context *ctx)
 
 	stop = FALSE;
 	screen = initCDKScreen(left);
+	if (!screen) {
+		stop = TRUE;
+		fprintf(stderr, "initCDKScreen failed, out of memory\n");
+		return;
+	}
 
-	pthread_create(&thd, NULL, read_thd, ctx);
+	if (pthread_create(&thd, NULL, read_thd, ctx)) {
+		fprintf(stderr, "problem with pthread_create\n");
+		goto thread_err;
+	}
 
 	nb_devices = iio_context_get_devices_count(ctx);
-	dev_names = malloc(nb_devices * sizeof(char *));
+	dev_names = calloc(nb_devices, sizeof(char *));
+	if (!dev_names) {
+		fprintf(stderr, "calloc failed, out of memory\n");
+		goto name_err;
+	}
 
 	for (i = 0; i < nb_devices; i++) {
 		char buf[1024];
@@ -301,23 +386,29 @@ static void show_main_screen(struct iio_context *ctx)
 		const char *name = iio_device_get_name(dev);
 		if (!name)
 			name = iio_device_get_id(dev);
-		sprintf(buf, "</B> %s", name);
+		iio_snprintf(buf, sizeof(buf), "</B> %s", name);
 		dev_names[i] = strdup(buf);
+		if (!dev_names[i])
+			goto dev_name_err;
 	}
 
 	boxWindow(right, 0);
 	list = newCDKScroll(screen, LEFT, TOP, RIGHT, 0, 0,
 			"\n List of available IIO devices:\n",
-			dev_names, nb_devices, FALSE,
+			(CDK_CSTRING2) dev_names, nb_devices, FALSE,
 			A_BOLD | A_REVERSE, TRUE, FALSE);
 
 	drawCDKScroll(list, TRUE);
 
 	while (!stop) {
 		int ret = activateCDKScroll(list, NULL);
+		struct timespec wait;
+		wait.tv_sec = 0;
+		wait.tv_nsec = (100000 * 1000);
+
 		stop = ret < 0;
 		selected = ret;
-		usleep(100000);
+		nanosleep(&wait, &wait);
 	}
 
 	pthread_join(thd, NULL);
@@ -327,6 +418,22 @@ static void show_main_screen(struct iio_context *ctx)
 		free(dev_names[i]);
 	free(dev_names);
 	destroyCDKScreen(screen);
+
+	return;
+
+dev_name_err:
+	for (i = 0; i < nb_devices; i++) {
+		if (dev_names[i])
+			free(dev_names[i]);
+	}
+	free(dev_names);
+name_err:
+	stop = TRUE;
+	pthread_join(thd, NULL);
+thread_err:
+	destroyCDKScreen(screen);
+
+	return;
 }
 
 int main(void)
@@ -338,6 +445,15 @@ int main(void)
 	noecho();
 	keypad(win, TRUE);
 	getmaxyx(win, row, col);
+
+	/* If this was started from a small window, quit */
+	if (row < 10 || col < 50) {
+		endwin();
+		fprintf(stderr, "Sorry, I need a bigger window,\n"
+				"min is 10 x 50\n");
+		return 0;
+	}
+
 	initCDKColor();
 
 	left = newwin(row, col / 2, 0, 0);

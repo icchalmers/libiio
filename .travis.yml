@@ -1,5 +1,6 @@
 language: c
 sudo: required
+python: "3.6"
 
 env:
   global:
@@ -15,7 +16,9 @@ services:
 
 matrix:
   include:
-    - compiler: "gcc"
+    - stage: "Build & Deploy"
+
+      compiler: "gcc"
       dist: xenial
       env:
         - ARCH=arm
@@ -34,10 +37,11 @@ matrix:
         # TODO do `check` or `check_hw` here too, not just `check_sw` (as part of `coverage`)
         - CHECK_RULE=coverage GCOV=1
         - PKG_RULE=gzip
+        - PYPI=yes
         - COVERITY_SCAN_PROJECT_NAME="$TRAVIS_REPO_SLUG"
         - COVERITY_SCAN_BRANCH_PATTERN="master"
         - COVERITY_SCAN_NOTIFICATION_EMAIL="robin.getz@analog.com"
-        - COVERITY_SCAN_BUILD_COMMAND_PREPEND="mkdir build && cd build && cmake .."
+        - COVERITY_SCAN_BUILD_COMMAND_PREPEND="mkdir build && cd build && cmake -DWITH_EXAMPLES=ON .."
         - COVERITY_SCAN_BUILD_COMMAND="make"
         # The COVERITY_SCAN_TOKEN
         - secure: "QQt2l9IVo0xXWLx7Xqgz/4Iezj7YroY3MKfmG+OhtzkMRx4prhx32/07JMNAcYx6mQrccyZkBNzpYuXlfIZjFL3xDxDj5+iKv5XXpJbRFQGhc5xZtAlzOIqHNMcFc0Aj8J2mZwKfSaDnBdf+nMgKcmn46pYbpJOmPe9iEfeLvvg="
@@ -62,14 +66,18 @@ matrix:
         - OS_VERSION=7
         - EXTRA_SSH=-oHostKeyAlgorithms=+ssh-dss
     - os: linux
+      dist: bionic
+      env:
+        - EXTRA_SSH=-oHostKeyAlgorithms=+ssh-dss
+    - os: linux
+      env:
+        - OS_TYPE=centos_docker
+        - OS_VERSION=8
+        - EXTRA_SSH=-oHostKeyAlgorithms=+ssh-dss
+    - os: linux
       env:
         - OS_TYPE=ubuntu_docker
-        - OS_VERSION=bionic
-        - EXTRA_SSH=-oHostKeyAlgorithms=+ssh-dss
-    - compiler: "gcc"
-      os: osx
-      osx_image: xcode9.2
-      env:
+        - OS_VERSION=focal
         - EXTRA_SSH=-oHostKeyAlgorithms=+ssh-dss
     - compiler: "gcc"
       os: osx
@@ -82,6 +90,10 @@ matrix:
       env:
         - EXTRA_SSH=-oHostKeyAlgorithms=+ssh-dss
 
+    - stage: "Trigger Next In Pipeline"
+      env:
+        - TRIGGER_NEXT_BUILD=true
+
 addons:
   artifacts: true
   ssh_known_hosts:
@@ -90,7 +102,7 @@ addons:
 before_install:
   - if [[ "$ARCH" == "arm" ]] ; then ./CI/travis/setup_qemu_for_arm.sh ${OS_VERSION} ; fi
   - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then ./CI/travis/before_install_darwin ; fi
-  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then ./CI/travis/before_install_linux "$OS_TYPE" "$OS_VERSION" ; fi
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then ./CI/travis/before_install_linux "$OS_TYPE" ; fi
   - if [[ -n "$COVERITY_SCAN_PROJECT_NAME" ]] ; then echo -n | openssl s_client -connect scan.coverity.com:443 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | sudo tee -a /etc/ssl/certs/ca- ; fi
   - if [ -n "$COVERITY_SCAN_PROJECT_NAME" -a "$TRAVIS_EVENT_TYPE" == "cron" ] ; then curl -s 'https://scan.coverity.com/scripts/travisci_build_coverity_scan.sh' | bash || true ; fi
 
@@ -99,8 +111,9 @@ before_install:
 
 script:
   - if [[ "$ARCH" == "arm" && "$TRAVIS_OS_NAME" == "linux" ]]; then ${TRAVIS_BUILD_DIR}/CI/travis/make_linux_qemu ; fi
-  - if [[ -z "$ARCH" && "$TRAVIS_OS_NAME" == "linux" ]]; then ${TRAVIS_BUILD_DIR}/CI/travis/make_linux libiio "$OS_TYPE" "$OS_VERSION" ; fi
+  - if [[ -z "$ARCH" && "$TRAVIS_OS_NAME" == "linux" ]]; then ${TRAVIS_BUILD_DIR}/CI/travis/make_linux libiio "$OS_TYPE" ; fi
   - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then ${TRAVIS_BUILD_DIR}/CI/travis/make_darwin; fi
+  - if [[ "$TRIGGER_NEXT_BUILD" == "true" ]]; then ${TRAVIS_BUILD_DIR}/CI/travis/after_deploy; fi
 
 notifications:
   email:
@@ -113,6 +126,7 @@ before_deploy:
   - eval "$(ssh-agent -s)"
   - chmod 600 /tmp/deploy.rsa
   - ssh-add /tmp/deploy.rsa
+  - if [[ "$PYPI" == "yes" ]]; then cd "build/bindings/python"; fi
 deploy:
   - provider: releases
     api_key:
@@ -151,6 +165,13 @@ deploy:
     on:
       condition: "$TRAVIS_OS_NAME = osx"
       all_branches: true
-
-after_deploy:
-  - ${TRAVIS_BUILD_DIR}/CI/travis/after_deploy
+  - provider: pypi
+    if: tag IS present
+    skip_cleanup: true
+    on:
+      tags: true
+      condition: "$PYPI = yes"
+    username: __token__
+    password:
+      secure: KfORvnPyLlMANLpcwJjcO44Kt6meP614omJk2GloD+B51SuV64O6N31VDOTi2xqioEk9Cajq7tmNte5YoHVUjL9iWFsBblpzxZoXcy40dn4pFN0kMiE8scszxckbDwuBZhokUVZ2fhfLKf/8xORcwjS3vKqSj5HwQKKvVgukSbQ=
+    distributions: sdist

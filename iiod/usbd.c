@@ -106,14 +106,14 @@ static int usb_open_pipe(struct usbd_pdata *pdata, unsigned int pipe_id)
 	 * before opening the endpoints again. */
 	thread_pool_stop_and_wait(pdata->pool[pipe_id]);
 
-	snprintf(buf, sizeof(buf), "%s/ep%u", pdata->ffs, pipe_id * 2 + 1);
+	iio_snprintf(buf, sizeof(buf), "%s/ep%u", pdata->ffs, pipe_id * 2 + 1);
 	cpdata->ep_out = open(buf, O_WRONLY);
 	if (cpdata->ep_out < 0) {
 		err = -errno;
 		goto err_free_cpdata;
 	}
 
-	snprintf(buf, sizeof(buf), "%s/ep%u", pdata->ffs, pipe_id * 2 + 2);
+	iio_snprintf(buf, sizeof(buf), "%s/ep%u", pdata->ffs, pipe_id * 2 + 2);
 	cpdata->ep_in = open(buf, O_RDONLY);
 	if (cpdata->ep_in < 0) {
 		err = -errno;
@@ -204,13 +204,13 @@ static void usbd_main(struct thread_pool *pool, void *d)
 
 		ret = read(pdata->ep0_fd, &event, sizeof(event));
 		if (ret != sizeof(event)) {
-			WARNING("Short read!\n");
+			IIO_WARNING("Short read!\n");
 			continue;
 		}
 
 		ret = handle_event(pdata, &event);
 		if (ret) {
-			ERROR("Unable to handle event: %i\n", ret);
+			IIO_ERROR("Unable to handle event: %i\n", ret);
 			break;
 		}
 
@@ -361,7 +361,7 @@ int start_usb_daemon(struct iio_context *ctx, const char *ffs,
 		goto err_free_pdata_pool;
 	}
 
-	snprintf(buf, sizeof(buf), "%s/ep0", ffs);
+	iio_snprintf(buf, sizeof(buf), "%s/ep0", ffs);
 
 	pdata->ep0_fd = open(buf, O_RDWR);
 	if (pdata->ep0_fd < 0) {

@@ -26,8 +26,11 @@
 
 static char *get_attr_xml(const char *attr, size_t *length, enum iio_attr_type type)
 {
-	size_t len = sizeof("<attribute name=\"\" />") + strlen(attr);
+	size_t len;
 	char *str;
+
+	len = sizeof("<attribute name=\"\" />") - 1;
+	len += strnlen(attr, MAX_ATTR_NAME);
 
 	switch(type){
 		case IIO_ATTR_TYPE_DEVICE:
@@ -42,11 +45,12 @@ static char *get_attr_xml(const char *attr, size_t *length, enum iio_attr_type t
 			return NULL;
 	}
 
+	*length = len; /* just the chars */
+	len++; /* room for terminating NULL */
 	str = malloc(len);
 	if (!str)
 		return NULL;
 
-	*length = len - 1; /* Skip the \0 */
 	switch (type) {
 		case IIO_ATTR_TYPE_DEVICE:
 			iio_snprintf(str, len, "<attribute name=\"%s\" />", attr);
@@ -65,11 +69,17 @@ static char *get_attr_xml(const char *attr, size_t *length, enum iio_attr_type t
 /* Returns a string containing the XML representation of this device */
 char * iio_device_get_xml(const struct iio_device *dev, size_t *length)
 {
-	size_t len = sizeof("<device id=\"\" name=\"\" ></device>")
-		+ strlen(dev->id) + (dev->name ? strlen(dev->name) : 0);
-	char *ptr, *str, **attrs, **channels, **buffer_attrs, **debug_attrs;
+	ssize_t len;
+	char *ptr, *eptr, *str, **attrs, **channels, **buffer_attrs, **debug_attrs;
 	size_t *attrs_len, *channels_len, *buffer_attrs_len, *debug_attrs_len;
 	unsigned int i, j, k;
+
+	len = sizeof("<device id=\"\" ></device>") - 1;
+	len += strnlen(dev->id, MAX_DEV_ID);
+	if (dev->name) {
+		len += sizeof(" name=\"\"") - 1;
+		len += strnlen(dev->name, MAX_DEV_NAME);
+	}
 
 	attrs_len = malloc(dev->nb_attrs * sizeof(*attrs_len));
 	if (!attrs_len)
@@ -140,24 +150,34 @@ char * iio_device_get_xml(const struct iio_device *dev, size_t *length)
 		len += debug_attrs_len[k];
 	}
 
+	len++;  /* room for terminating NULL */
 	str = malloc(len);
 	if (!str)
 		goto err_free_debug_attrs;
+	eptr = str + len;
+	ptr = str;
 
-	iio_snprintf(str, len, "<device id=\"%s\"", dev->id);
-	ptr = strrchr(str, '\0');
-
-	if (dev->name) {
-		sprintf(ptr, " name=\"%s\"", dev->name);
-		ptr = strrchr(ptr, '\0');
+	if (len > 0) {
+		ptr += iio_snprintf(str, len, "<device id=\"%s\"", dev->id);
+		len = eptr - ptr;
 	}
 
-	strcpy(ptr, " >");
-	ptr += 2;
+	if (dev->name && len > 0) {
+		ptr += iio_snprintf(ptr, len, " name=\"%s\"", dev->name);
+		len = eptr - ptr;
+	}
+
+	if (len > 0) {
+		ptr += iio_strlcpy(ptr, " >", len);
+		len -= 2;
+	}
 
 	for (i = 0; i < dev->nb_channels; i++) {
-		strcpy(ptr, channels[i]);
-		ptr += channels_len[i];
+		if (len > (ssize_t) channels_len[i]) {
+			memcpy(ptr, channels[i], channels_len[i]); /* Flawfinder: ignore */
+			ptr += channels_len[i];
+			len -= channels_len[i];
+		}
 		free(channels[i]);
 	}
 
@@ -165,8 +185,11 @@ char * iio_device_get_xml(const struct iio_device *dev, size_t *length)
 	free(channels_len);
 
 	for (i = 0; i < dev->nb_attrs; i++) {
-		strcpy(ptr, attrs[i]);
-		ptr += attrs_len[i];
+		if (len > (ssize_t) attrs_len[i]) {
+			memcpy(ptr, attrs[i], attrs_len[i]); /* Flawfinder: ignore */
+			ptr += attrs_len[i];
+			len -= attrs_len[i];
+		}
 		free(attrs[i]);
 	}
 
@@ -174,8 +197,11 @@ char * iio_device_get_xml(const struct iio_device *dev, size_t *length)
 	free(attrs_len);
 
 	for (i = 0; i < dev->nb_buffer_attrs; i++) {
-		strcpy(ptr, buffer_attrs[i]);
-		ptr += buffer_attrs_len[i];
+		if (len > (ssize_t) buffer_attrs_len[i]) {
+			memcpy(ptr, buffer_attrs[i], buffer_attrs_len[i]); /* Flawfinder: ignore */
+			ptr += buffer_attrs_len[i];
+			len -= buffer_attrs_len[i];
+		}
 		free(buffer_attrs[i]);
 	}
 
@@ -183,16 +209,30 @@ char * iio_device_get_xml(const struct iio_device *dev, size_t *length)
 	free(buffer_attrs_len);
 
 	for (i = 0; i < dev->nb_debug_attrs; i++) {
-		strcpy(ptr, debug_attrs[i]);
-		ptr += debug_attrs_len[i];
+		if (len > (ssize_t) debug_attrs_len[i]) {
+			memcpy(ptr, debug_attrs[i], debug_attrs_len[i]); /* Flawfinder: ignore */
+			ptr += debug_attrs_len[i];
+			len -= debug_attrs_len[i];
+		}
 		free(debug_attrs[i]);
 	}
 
 	free(debug_attrs);
 	free(debug_attrs_len);
 
-	strcpy(ptr, "</device>");
-	*length = ptr - str + sizeof("</device>") - 1;
+	if (len > 0) {
+		ptr += iio_strlcpy(ptr, "</device>", len);
+		len -= sizeof("</device>") - 1;
+	}
+
+	*length = ptr - str;
+
+	if (len != 1) {
+		IIO_ERROR("Internal libIIO error: iio_device_get_xml str length issue\n");
+		free(str);
+		return NULL;
+	}
+
 	return str;
 
 err_free_debug_attrs:
@@ -582,8 +622,9 @@ int iio_device_attr_read_longlong(const struct iio_device *dev,
 	if (ret < 0)
 		return (int) ret;
 
+	errno = 0;
 	value = strtoll(buf, &end, 0);
-	if (end == buf)
+	if (end == buf || errno == ERANGE)
 		return -EINVAL;
 	*val = value;
 	return 0;
@@ -621,7 +662,7 @@ int iio_device_attr_write_longlong(const struct iio_device *dev,
 	iio_snprintf(buf, sizeof(buf), "%lld", val);
 	ret = iio_device_attr_write(dev, attr, buf);
 
-	return ret < 0 ? ret : 0;
+	return (int) (ret < 0 ? ret : 0);
 }
 
 int iio_device_attr_write_double(const struct iio_device *dev,
@@ -633,7 +674,7 @@ int iio_device_attr_write_double(const struct iio_device *dev,
 	ret = (ssize_t) write_double(buf, sizeof(buf), val);
 	if (!ret)
 		ret = iio_device_attr_write(dev, attr, buf);
-	return ret < 0 ? ret : 0;
+	return (int) (ret < 0 ? ret : 0);
 }
 
 int iio_device_attr_write_bool(const struct iio_device *dev,
@@ -646,7 +687,7 @@ int iio_device_attr_write_bool(const struct iio_device *dev,
 	else
 		ret = iio_device_attr_write(dev, attr, "0");
 
-	return ret < 0 ? ret : 0;
+	return (int) (ret < 0 ? ret : 0);
 }
 
 int iio_device_buffer_attr_read_longlong(const struct iio_device *dev,
@@ -658,8 +699,9 @@ int iio_device_buffer_attr_read_longlong(const struct iio_device *dev,
 	if (ret < 0)
 		return (int) ret;
 
+	errno = 0;
 	value = strtoll(buf, &end, 0);
-	if (end == buf)
+	if (end == buf || errno == ERANGE)
 		return -EINVAL;
 	*val = value;
 	return 0;
@@ -697,7 +739,7 @@ int iio_device_buffer_attr_write_longlong(const struct iio_device *dev,
 	iio_snprintf(buf, sizeof(buf), "%lld", val);
 	ret = iio_device_buffer_attr_write(dev, attr, buf);
 
-	return ret < 0 ? ret : 0;
+	return (int) (ret < 0 ? ret : 0);
 }
 
 int iio_device_buffer_attr_write_double(const struct iio_device *dev,
@@ -709,7 +751,7 @@ int iio_device_buffer_attr_write_double(const struct iio_device *dev,
 	ret = (ssize_t) write_double(buf, sizeof(buf), val);
 	if (!ret)
 		ret = iio_device_buffer_attr_write(dev, attr, buf);
-	return ret < 0 ? ret : 0;
+	return (int) (ret < 0 ? ret : 0);
 }
 
 int iio_device_buffer_attr_write_bool(const struct iio_device *dev,
@@ -722,7 +764,7 @@ int iio_device_buffer_attr_write_bool(const struct iio_device *dev,
 	else
 		ret = iio_device_buffer_attr_write(dev, attr, "0");
 
-	return ret < 0 ? ret : 0;
+	return (int) (ret < 0 ? ret : 0);
 }
 
 ssize_t iio_device_debug_attr_read(const struct iio_device *dev,
@@ -774,8 +816,9 @@ int iio_device_debug_attr_read_longlong(const struct iio_device *dev,
 	if (ret < 0)
 		return (int) ret;
 
+	errno = 0;
 	value = strtoll(buf, &end, 0);
-	if (end == buf)
+	if (end == buf || errno == ERANGE)
 		return -EINVAL;
 	*val = value;
 	return 0;
@@ -813,7 +856,7 @@ int iio_device_debug_attr_write_longlong(const struct iio_device *dev,
 	iio_snprintf(buf, sizeof(buf), "%lld", val);
 	ret = iio_device_debug_attr_write(dev, attr, buf);
 
-	return ret < 0 ? ret : 0;
+	return (int) (ret < 0 ? ret : 0);
 }
 
 int iio_device_debug_attr_write_double(const struct iio_device *dev,
@@ -825,7 +868,7 @@ int iio_device_debug_attr_write_double(const struct iio_device *dev,
 	ret = (ssize_t) write_double(buf, sizeof(buf), val);
 	if (!ret)
 		ret = iio_device_debug_attr_write(dev, attr, buf);
-	return ret < 0 ? ret : 0;
+	return (int) (ret < 0 ? ret : 0);
 }
 
 int iio_device_debug_attr_write_bool(const struct iio_device *dev,
@@ -838,7 +881,7 @@ int iio_device_debug_attr_write_bool(const struct iio_device *dev,
 	else
 		ret = iio_device_debug_attr_write_raw(dev, attr, "0", 2);
 
-	return ret < 0 ? ret : 0;
+	return (int) (ret < 0 ? ret : 0);
 }
 
 int iio_device_identify_filename(const struct iio_device *dev,
@@ -890,7 +933,7 @@ int iio_device_reg_write(struct iio_device *dev,
 			address, value);
 	ret = iio_device_debug_attr_write(dev, "direct_reg_access", buf);
 
-	return ret < 0 ? ret : 0;
+	return (int) (ret < 0 ? ret : 0);
 }
 
 int iio_device_reg_read(struct iio_device *dev,

@@ -12,6 +12,12 @@ add_flex_bison_dependency(lexer parser)
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
+if (CMAKE_C_COMPILER_ID STREQUAL "Clang" OR CMAKE_COMPILER_IS_GNUCC)
+	# flex sometimes generates code which generate sign comparison errors
+	set_source_files_properties(${FLEX_lexer_OUTPUTS} PROPERTIES COMPILE_FLAGS "-Wno-sign-compare")
+	set_source_files_properties(${BISON_parser_OUTPUTS} PROPERTIES COMPILE_FLAGS "-Wno-sign-compare")
+endif ()
+
 set(IIOD_CFILES iiod.c ops.c thread-pool.c ${BISON_parser_OUTPUTS} ${FLEX_lexer_OUTPUTS})
 
 find_library(LIBAIO_LIBRARIES aio)
@@ -37,11 +43,6 @@ if (HAVE_FUNCTIONFS_V2)
 		set(IIOD_CFILES ${IIOD_CFILES} usbd.c)
 	endif (WITH_IIOD_USBD)
 endif (HAVE_FUNCTIONFS_V2)
-
-include(CheckSymbolExists)
-set(CMAKE_REQUIRED_LIBRARIES ${PTHREAD_LIBRARIES})
-check_symbol_exists(pthread_setname_np "pthread.h" HAS_PTHREAD_SETNAME_NP)
-set(CMAKE_REQUIRED_LIBRARIES)
 
 add_executable(iiod ${IIOD_CFILES})
 set_target_properties(iiod PROPERTIES

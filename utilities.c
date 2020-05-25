@@ -21,6 +21,7 @@
 
 #include "iio-config.h"
 #include "iio-private.h"
+#include "network.h"
 
 #include <errno.h>
 #include <locale.h>
@@ -41,6 +42,7 @@ static int read_double_locale(const char *str, double *val)
 {
 	char *end, *old_locale;
 	double value;
+	bool problem = false;
 
 	/* XXX: This is not thread-safe, but it's the only way we have to
 	 * support locales under MinGW without linking with Visual Studio
@@ -50,11 +52,16 @@ static int read_double_locale(const char *str, double *val)
 		return -ENOMEM;
 
 	setlocale(LC_NUMERIC, "C");
+
+	errno = 0;
 	value = strtod(str, &end);
+	if (end == str || errno == ERANGE)
+		problem = true;
+
 	setlocale(LC_NUMERIC, old_locale);
 	free(old_locale);
 
-	if (end == str)
+	if (problem)
 		return -EINVAL;
 
 	*val = value;
@@ -79,14 +86,20 @@ static int read_double_locale(const char *str, double *val)
 {
 	char *end;
 	double value;
+	bool problem = false;
+
 	_locale_t locale = _create_locale(LC_NUMERIC, "C");
 	if (!locale)
 		return -ENOMEM;
 
+	errno = 0;
 	value = _strtod_l(str, &end, locale);
+	if (end == str || errno == ERANGE)
+		problem = true;
+
 	_free_locale(locale);
 
-	if (end == str)
+	if (problem)
 		return -EINVAL;
 
 	*val = value;
@@ -99,7 +112,7 @@ static int write_double_locale(char *buf, size_t len, double val)
 	if (!locale)
 		return -ENOMEM;
 
-	_snprintf_l(buf, len, "%f", locale, val);
+	_snprintf_s_l(buf, len, _TRUNCATE, "%f", locale, val);
 	_free_locale(locale);
 	return 0;
 }
@@ -108,6 +121,7 @@ static int read_double_locale(const char *str, double *val)
 {
 	char *end;
 	double value;
+	bool problem = false;
 	locale_t old_locale, new_locale;
 
 	new_locale = newlocale(LC_NUMERIC_MASK, "C", (locale_t) 0);
@@ -116,11 +130,15 @@ static int read_double_locale(const char *str, double *val)
 
 	old_locale = uselocale(new_locale);
 
+	errno = 0;
 	value = strtod(str, &end);
+	if (end == str || errno == ERANGE)
+		problem = true;
+
 	uselocale(old_locale);
 	freelocale(new_locale);
 
-	if (end == str)
+	if (problem)
 		return -EINVAL;
 
 	*val = value;
@@ -152,9 +170,11 @@ int read_double(const char *str, double *val)
 	return read_double_locale(str, val);
 #else
 	char *end;
-	double value = strtod(str, &end);
+	double value;
 
-	if (end == str)
+	errno = 0;
+	value = strtod(str, &end);
+	if (end == str || errno == ERANGE)
 		return -EINVAL;
 
 	*val = value;
@@ -180,8 +200,7 @@ void iio_library_get_version(unsigned int *major,
 	if (minor)
 		*minor = LIBIIO_VERSION_MINOR;
 	if (git_tag) {
-		strncpy(git_tag, LIBIIO_VERSION_GIT, 8);
-		git_tag[7] = '\0';
+		iio_strlcpy(git_tag, LIBIIO_VERSION_GIT, 8);
 	}
 }
 
@@ -213,4 +232,92 @@ char *iio_strdup(const char *str)
 		memcpy(buf, str, len + 1);
 	return buf;
 #endif
+}
+
+/* strlcpy is designed to be safer, more consistent, and less error prone
+ * replacements for strncpy, since it guarantees to NUL-terminate the result.
+ *
+ * This function
+ * Copyright (c) 1998, 2015 Todd C. Miller <Todd.Miller@courtesan.com>
+ * https://github.com/freebsd/freebsd/blob/master/sys/libkern/strlcpy.c
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * Copy string src to buffer dst of size dsize.  At most dsize-1
+ * chars will be copied.  Always NUL terminates (unless dsize == 0).
+ * Returns strlen(src); if retval >= dsize, truncation occurred.
+ *
+ * src is assumed to be null terminated, if it is not, this function will
+ * dereference unknown memory beyond src.
+ */
+size_t iio_strlcpy(char * __restrict dst, const char * __restrict src, size_t dsize)
+{
+	const char *osrc = src;
+	size_t nleft = dsize;
+
+	/* Copy as many bytes as will fit. */
+	if (nleft != 0) {
+		while (--nleft != 0) {
+			if ((*dst++ = *src++) == '\0')
+				break;
+		}
+	}
+
+	/* Not enough room in dst, add NUL and traverse rest of src. */
+	if (nleft == 0) {
+		if (dsize != 0)
+			*dst = '\0';            /* NUL-terminate dst */
+
+		while (*src++)
+			;
+	}
+
+	return(src - osrc - 1); /* count does not include NUL */
+}
+
+/* Cross platform version of getenv */
+
+char * iio_getenv (char * envvar)
+{
+	char *hostname;
+	size_t len, tmp;
+
+#ifdef _MSC_BUILD
+	if (_dupenv_s(&hostname, NULL, envvar))
+		return NULL;
+#else
+	/* This is qualified below, and a copy is returned
+	 * so it's safe to use
+	 */
+	hostname = getenv(envvar); /* Flawfinder: ignore */
+#endif
+
+	if (!hostname)
+		return NULL;
+
+	tmp = MAXHOSTNAMELEN + sizeof("serial:") + sizeof(":65535") - 2;
+	len = strnlen(hostname, tmp);
+
+	/* Should be smaller than max length */
+	if (len <= tmp)
+		goto wrong_str;
+
+	/* should be more than "usb:" or "ip:" */
+	tmp = sizeof("ip:") - 1;
+	if (len < tmp)
+		goto wrong_str;
+
+#ifdef _MSC_BUILD
+	return hostname;
+#else
+	return strdup (hostname);
+#endif
+
+wrong_str:
+#ifdef _WIN32
+	free(hostname);
+#endif
+	return NULL;
 }

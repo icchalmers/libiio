@@ -1,9 +1,27 @@
 #!/bin/sh -e
 
+if [ "$TRIGGER_NEXT_BUILD" = "true" ] && [ "$TRIGGERING_NEXT_BUILD" != "true" ] ; then
+	exit 0
+fi
+
 export TRAVIS_API_URL="https://api.travis-ci.org"
 LOCAL_BUILD_DIR=${LOCAL_BUILD_DIR:-build}
 
-COMMON_SCRIPTS="jobs_running_cnt.py inside_docker.sh"
+HOMEBREW_NO_INSTALL_CLEANUP=1
+export HOMEBREW_NO_INSTALL_CLEANUP
+
+# Add here all the common env-vars that should be propagated
+# to the docker image, simply by referencing the env-var name.
+# The values will be evaluated.
+#
+# Make sure to not pass certain stuff that are specific to the host
+# and not specific to inside-the-docker (like TRAVIS_BUILD_DIR)
+#
+# If these nothing should be passed, then clear or
+#'unset INSIDE_DOCKER_TRAVIS_CI_ENV' after this script is included
+INSIDE_DOCKER_TRAVIS_CI_ENV="TRAVIS TRAVIS_COMMIT TRAVIS_PULL_REQUEST OS_VERSION"
+
+COMMON_SCRIPTS="inside_docker.sh"
 
 echo_red()   { printf "\033[1;31m$*\033[m\n"; }
 echo_green() { printf "\033[1;32m$*\033[m\n"; }
@@ -62,17 +80,6 @@ should_trigger_next_builds() {
 	[ "$TRAVIS_PULL_REQUEST" = "false" ] || return 1
 
 	pipeline_branch "$branch" || return 1
-
-	local python_script="$(get_script_path jobs_running_cnt.py)"
-	if [ -z "$python_script" ] ; then
-		echo "Could not find 'jobs_running_cnt.py'"
-		return 1
-	fi
-
-	local jobs_cnt=$(python $python_script)
-
-	# Trigger next job if we are the last job running
-	[ "$jobs_cnt" = "1" ]
 }
 
 trigger_build() {
@@ -96,7 +103,7 @@ trigger_build() {
 		-H "Travis-API-Version: 3" \
 		-H "Authorization: token $TRAVIS_API_TOKEN" \
 		-d "$body" \
-		https://api.travis-ci.org/repo/$repo_slug/requests
+		"https://api.travis-ci.org/repo/$repo_slug/requests"
 }
 
 trigger_adi_build() {
@@ -148,9 +155,9 @@ get_ldist() {
 }
 
 __brew_install_or_upgrade() {
-	brew install $1 || \
-		brew upgrade $1 || \
-		brew ls --version $1
+	brew install "$1" || \
+		brew upgrade "$1" || \
+		brew ls --versions "$1"
 }
 
 brew_install_or_upgrade() {
@@ -160,8 +167,20 @@ brew_install_or_upgrade() {
 	done
 }
 
+__brew_install_if_not_exists() {
+	brew ls --versions "$1" || \
+		brew install "$1"
+}
+
+brew_install_if_not_exists() {
+	while [ -n "$1" ] ; do
+		__brew_install_if_not_exists "$1" || return 1
+		shift
+	done
+}
+
 sftp_cmd_pipe() {
-	sftp ${EXTRA_SSH} ${SSHUSER}@${SSHHOST}
+	sftp "${EXTRA_SSH}" "${SSHUSER}@${SSHHOST}"
 }
 
 sftp_rm_artifact() {
@@ -222,12 +241,12 @@ upload_file_to_swdownloads() {
 	local LATE=${branch}_latest_${LIBNAME}${LDIST}${EXT}
 	local GLOB=${DEPLOY_TO}/${branch}_${LIBNAME}-*
 
-	echo attemting to deploy $FROM to $TO
-	echo and ${branch}_${LIBNAME}${LDIST}${EXT}
+	echo attempting to deploy "$FROM" to "$TO"
+	echo and "${branch}_${LIBNAME}${LDIST}${EXT}"
 	ssh -V
 
 	for rmf in ${TO} ${LATE} ; do
-		sftp_rm_artifact ${rmf} || \
+		sftp_rm_artifact "${rmf}" || \
 			echo_blue "Could not delete ${rmf}"
 	done
 
@@ -238,10 +257,10 @@ upload_file_to_swdownloads() {
 
 	# limit things to a few files, so things don't grow forever
 	if [ "${EXT}" = ".deb" ] ; then
-		for files in $(ssh ${EXTRA_SSH} ${SSHUSER}@${SSHHOST} \
+		for files in $(ssh "${EXTRA_SSH}" "${SSHUSER}@${SSHHOST}" \
 			"ls -lt ${GLOB}" | tail -n +100 | awk '{print $NF}')
 		do
-			ssh ${EXTRA_SSH} ${SSHUSER}@${SSHHOST} \
+			ssh "${EXTRA_SSH}" "${SSHUSER}@${SSHHOST}" \
 				"rm ${DEPLOY_TO}/${files}" || \
 				return 1
 		done
@@ -258,14 +277,27 @@ prepare_docker_image() {
 	sudo docker pull "$DOCKER_IMAGE"
 }
 
+__save_env_for_docker() {
+	local env_file="$1/inside-travis-ci-docker-env"
+	for env in $INSIDE_DOCKER_TRAVIS_CI_ENV ; do
+		val="$(eval echo "\$${env}")"
+		if [ -n "$val" ] ; then
+			echo "export ${env}=${val}" >> "${env_file}"
+		fi
+	done
+}
+
 run_docker_script() {
 	local DOCKER_SCRIPT="$(get_script_path $1)"
 	local DOCKER_IMAGE="$2"
 	local OS_TYPE="$3"
 	local MOUNTPOINT="${4:-docker_build_dir}"
+
+	__save_env_for_docker "${TRAVIS_BUILD_DIR}"
+
 	sudo docker run --rm=true \
 		-v "$(pwd):/${MOUNTPOINT}:rw" \
-		$DOCKER_IMAGE \
+		"$DOCKER_IMAGE" \
 		/bin/bash -e "/${MOUNTPOINT}/${DOCKER_SCRIPT}" "${MOUNTPOINT}" "${OS_TYPE}"
 }
 
@@ -278,17 +310,55 @@ ensure_command_exists() {
 	# go through known package managers
 	for pacman in apt-get brew yum ; do
 		command_exists $pacman || continue
-		$pacman install -y $package || {
+		"$pacman" install -y "$package" || {
 			# Try an update if install doesn't work the first time
-			$pacman -y update && \
-				$pacman install -y $package
+			"$pacman" -y update && \
+				"$pacman" install -y "$package"
 		}
 		return $?
 	done
 	return 1
 }
 
+version_gt() { test "$(echo "$@" | tr " " "\n" | sort -V | head -n 1)" != "$1"; }
+version_le() { test "$(echo "$@" | tr " " "\n" | sort -V | head -n 1)" = "$1"; }
+version_lt() { test "$(echo "$@" | tr " " "\n" | sort -rV | head -n 1)" != "$1"; }
+version_ge() { test "$(echo "$@" | tr " " "\n" | sort -rV | head -n 1)" = "$1"; }
+
+get_codename() {
+	lsb_release -c -s
+}
+
+get_dist_id() {
+	lsb_release -i -s
+}
+
+get_version() {
+	lsb_release -r -s
+}
+
+is_ubuntu_at_least_ver() {
+	[ "$(get_dist_id)" = "Ubuntu" ] || return 1
+	version_ge "$(get_version)" "$1"
+}
+
+is_centos_at_least_ver() {
+	[ "$(get_dist_id)" = "CentOS" ] || return 1
+	version_ge "$(get_version)" "$1"
+}
+
+print_github_api_rate_limits() {
+	# See https://developer.github.com/v3/rate_limit/
+	# Note: Accessing this endpoint does not count against your REST API rate limit.
+	echo_green '-----------------------------------------'
+	echo_green 'Github API Rate limits'
+	echo_green '-----------------------------------------'
+	wget -q -O- https://api.github.com/rate_limit
+	echo_green '-----------------------------------------'
+}
+
 ensure_command_exists sudo
+ensure_command_exists wget
 
 # Other scripts will download lib.sh [this script] and lib.sh will
 # in turn download the other scripts it needs.
@@ -297,8 +367,9 @@ for script in $COMMON_SCRIPTS ; do
 	[ ! -f "CI/travis/$script" ] || continue
 	[ ! -f "ci/travis/$script" ] || continue
 	[ ! -f "${LOCAL_BUILD_DIR}/$script" ] || continue
-	mkdir -p ${LOCAL_BUILD_DIR}
-	ensure_command_exists wget
+	mkdir -p "${LOCAL_BUILD_DIR}"
 	wget https://raw.githubusercontent.com/analogdevicesinc/libiio/master/CI/travis/$script \
-		-O $LOCAL_BUILD_DIR/$script
+		-O "$LOCAL_BUILD_DIR/$script"
 done
+
+print_github_api_rate_limits

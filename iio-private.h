@@ -29,8 +29,10 @@
 #ifdef _MSC_BUILD
 #define inline __inline
 #define iio_snprintf sprintf_s
+#define iio_sscanf sscanf_s
 #else
 #define iio_snprintf snprintf
+#define iio_sscanf sscanf
 #endif
 
 #ifdef _WIN32
@@ -45,10 +47,6 @@
 #   define __api
 #endif
 
-#ifdef WITH_MATLAB_BINDINGS_API
-#include "bindings/matlab/iio-wrapper.h"
-#endif
-
 #define ARRAY_SIZE(x) (sizeof(x) ? sizeof(x) / sizeof((x)[0]) : 0)
 #define BIT(x) (1 << (x))
 #define BIT_MASK(bit) BIT((bit) % 32)
@@ -60,6 +58,30 @@
 #define CLEAR_BIT(addr, bit) \
 	*(((uint32_t *) addr) + BIT_WORD(bit)) &= ~BIT_MASK(bit)
 
+/* https://pubs.opengroup.org/onlinepubs/009695399/basedefs/limits.h.html
+ * {NAME_MAX} : Maximum number of bytes in a filename
+ * {PATH_MAX} : Maximum number of bytes in a pathname
+ * {PAGESIZE} : Size in bytes of a page
+ * Too bad we work on non-POSIX systems
+ */
+#ifndef NAME_MAX
+#define NAME_MAX 256
+#endif
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+#ifndef PAGESIZE
+#define PAGESIZE 4096
+#endif
+
+#define MAX_CHN_ID     NAME_MAX  /* encoded in the sysfs filename */
+#define MAX_CHN_NAME   NAME_MAX  /* encoded in the sysfs filename */
+#define MAX_DEV_ID     NAME_MAX  /* encoded in the sysfs filename */
+#define MAX_DEV_NAME   NAME_MAX  /* encoded in the sysfs filename */
+#define MAX_CTX_NAME   NAME_MAX  /* nominally "xml" */
+#define MAX_CTX_DESC   NAME_MAX  /* nominally "linux ..." */
+#define MAX_ATTR_NAME  NAME_MAX  /* encoded in the sysfs filename */
+#define MAX_ATTR_VALUE PAGESIZE  /* Linux page size, could be anything */
 
 /* ntohl/htonl are a nightmare to use in cross-platform applications,
  * since they are defined in different headers on different platforms.
@@ -262,8 +284,8 @@ struct iio_context * local_create_context(void);
 struct iio_context * network_create_context(const char *hostname);
 struct iio_context * xml_create_context_mem(const char *xml, size_t len);
 struct iio_context * xml_create_context(const char *xml_file);
-struct iio_context * usb_create_context(unsigned int bus, unsigned int address,
-		unsigned int interface);
+struct iio_context * usb_create_context(unsigned int bus, uint16_t address,
+		uint16_t intrfc);
 struct iio_context * usb_create_context_from_uri(const char *uri);
 struct iio_context * serial_create_context_from_uri(const char *uri);
 
@@ -275,6 +297,12 @@ void usb_context_scan_free(struct iio_scan_backend_context *ctx);
 int usb_context_scan(struct iio_scan_backend_context *ctx,
 		struct iio_scan_result *scan_result);
 
+struct iio_scan_backend_context * dnssd_context_scan_init(void);
+void dnssd_context_scan_free(struct iio_scan_backend_context *ctx);
+
+int dnssd_context_scan(struct iio_scan_backend_context *ctx,
+		struct iio_scan_result *scan_result);
+
 /* This function is not part of the API, but is used by the IIO daemon */
 __api ssize_t iio_device_get_sample_size_mask(const struct iio_device *dev,
 		const uint32_t *mask, size_t words);
@@ -283,6 +311,8 @@ void iio_channel_init_finalize(struct iio_channel *chn);
 unsigned int find_channel_modifier(const char *s, size_t *len_p);
 
 char *iio_strdup(const char *str);
+size_t iio_strlcpy(char * __restrict dst, const char * __restrict src, size_t dsize);
+char * iio_getenv (char * envvar);
 
 int iio_context_add_attr(struct iio_context *ctx,
 		const char *key, const char *value);

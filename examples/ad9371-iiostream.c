@@ -5,16 +5,19 @@
  * Author: Michael Feilen <feilen_at_iabg.de>
  * Copyright (C) 2017 Analog Devices Inc.
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
- * This library is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  **/
 
 #include <stdbool.h>
@@ -22,18 +25,13 @@
 #include <string.h>
 #include <signal.h>
 #include <stdio.h>
-
-#ifdef __APPLE__
-#include <iio/iio.h>
-#else
 #include <iio.h>
-#endif
 
 /* helper macros */
 #define MHZ(x) ((long long)(x*1000000.0 + .5))
 #define GHZ(x) ((long long)(x*1000000000.0 + .5))
 
-#define ASSERT(expr) { \
+#define IIO_ENSURE(expr) { \
 	if (!(expr)) { \
 		(void) fprintf(stderr, "assertion failed (%s:%d)\n", __FILE__, __LINE__); \
 		(void) abort(); \
@@ -82,7 +80,7 @@ static void shutdown()
 
 static void handle_sig(int sig)
 {
-	printf("Waiting for process to finish...\n");
+	printf("Waiting for process to finish... Got signal %d\n", sig);
 	stop = true;
 }
 
@@ -134,7 +132,7 @@ static char* get_ch_name(const char* type, int id)
 static struct iio_device* get_ad9371_phy(struct iio_context *ctx)
 {
 	struct iio_device *dev =  iio_context_find_device(ctx, "ad9371-phy");
-	ASSERT(dev && "No ad9371-phy found");
+	IIO_ENSURE(dev && "No ad9371-phy found");
 	return dev;
 }
 
@@ -144,12 +142,12 @@ static bool get_ad9371_stream_dev(struct iio_context *ctx, enum iodev d, struct 
 	switch (d) {
 	case TX: *dev = iio_context_find_device(ctx, "axi-ad9371-tx-hpc"); return *dev != NULL;
 	case RX: *dev = iio_context_find_device(ctx, "axi-ad9371-rx-hpc");  return *dev != NULL;
-	default: ASSERT(0); return false;
+	default: IIO_ENSURE(0); return false;
 	}
 }
 
 /* finds AD9371 streaming IIO channels */
-static bool get_ad9371_stream_ch(struct iio_context *ctx, enum iodev d, struct iio_device *dev, int chid, char modify, struct iio_channel **chn)
+static bool get_ad9371_stream_ch(__notused struct iio_context *ctx, enum iodev d, struct iio_device *dev, int chid, char modify, struct iio_channel **chn)
 {
 	*chn = iio_device_find_channel(dev, modify ? get_ch_name_mod("voltage", chid, modify) : get_ch_name("voltage", chid), d == TX);
 	if (!*chn)
@@ -163,7 +161,7 @@ static bool get_phy_chan(struct iio_context *ctx, enum iodev d, int chid, struct
 	switch (d) {
 	case RX: *chn = iio_device_find_channel(get_ad9371_phy(ctx), get_ch_name("voltage", chid), false); return *chn != NULL;
 	case TX: *chn = iio_device_find_channel(get_ad9371_phy(ctx), get_ch_name("voltage", chid), true);  return *chn != NULL;
-	default: ASSERT(0); return false;
+	default: IIO_ENSURE(0); return false;
 	}
 }
 
@@ -174,7 +172,7 @@ static bool get_lo_chan(struct iio_context *ctx, enum iodev d, struct iio_channe
 	 // LO chan is always output, i.e. true
 	case RX: *chn = iio_device_find_channel(get_ad9371_phy(ctx), get_ch_name("altvoltage", 0), true); return *chn != NULL;
 	case TX: *chn = iio_device_find_channel(get_ad9371_phy(ctx), get_ch_name("altvoltage", 1), true); return *chn != NULL;
-	default: ASSERT(0); return false;
+	default: IIO_ENSURE(0); return false;
 	}
 }
 
@@ -198,7 +196,7 @@ bool cfg_ad9371_streaming_ch(struct iio_context *ctx, struct stream_cfg *cfg, en
 }
 
 /* simple configuration and streaming */
-int main (int argc, char **argv)
+int main (__notused int argc, __notused char **argv)
 {
 	// Streaming devices
 	struct iio_device *tx;
@@ -212,7 +210,7 @@ int main (int argc, char **argv)
 	struct stream_cfg rxcfg;
 	struct stream_cfg txcfg;
 
-	// Listen to ctrl+c and ASSERT
+	// Listen to ctrl+c and IIO_ENSURE
 	signal(SIGINT, handle_sig);
 
 	// RX stream config
@@ -222,22 +220,22 @@ int main (int argc, char **argv)
 	txcfg.lo_hz = GHZ(2.5); // 2.5 GHz rf frequency
 
 	printf("* Acquiring IIO context\n");
-	ASSERT((ctx = iio_create_default_context()) && "No context");
-	ASSERT(iio_context_get_devices_count(ctx) > 0 && "No devices");
+	IIO_ENSURE((ctx = iio_create_default_context()) && "No context");
+	IIO_ENSURE(iio_context_get_devices_count(ctx) > 0 && "No devices");
 
 	printf("* Acquiring AD9371 streaming devices\n");
-	ASSERT(get_ad9371_stream_dev(ctx, TX, &tx) && "No tx dev found");
-	ASSERT(get_ad9371_stream_dev(ctx, RX, &rx) && "No rx dev found");
+	IIO_ENSURE(get_ad9371_stream_dev(ctx, TX, &tx) && "No tx dev found");
+	IIO_ENSURE(get_ad9371_stream_dev(ctx, RX, &rx) && "No rx dev found");
 
 	printf("* Configuring AD9371 for streaming\n");
-	ASSERT(cfg_ad9371_streaming_ch(ctx, &rxcfg, RX, 0) && "RX port 0 not found");
-	ASSERT(cfg_ad9371_streaming_ch(ctx, &txcfg, TX, 0) && "TX port 0 not found");
+	IIO_ENSURE(cfg_ad9371_streaming_ch(ctx, &rxcfg, RX, 0) && "RX port 0 not found");
+	IIO_ENSURE(cfg_ad9371_streaming_ch(ctx, &txcfg, TX, 0) && "TX port 0 not found");
 
 	printf("* Initializing AD9371 IIO streaming channels\n");
-	ASSERT(get_ad9371_stream_ch(ctx, RX, rx, 0, 'i', &rx0_i) && "RX chan i not found");
-	ASSERT(get_ad9371_stream_ch(ctx, RX, rx, 0, 'q', &rx0_q) && "RX chan q not found");
-	ASSERT(get_ad9371_stream_ch(ctx, TX, tx, 0, 0, &tx0_i) && "TX chan i not found");
-	ASSERT(get_ad9371_stream_ch(ctx, TX, tx, 1, 0, &tx0_q) && "TX chan q not found");
+	IIO_ENSURE(get_ad9371_stream_ch(ctx, RX, rx, 0, 'i', &rx0_i) && "RX chan i not found");
+	IIO_ENSURE(get_ad9371_stream_ch(ctx, RX, rx, 0, 'q', &rx0_q) && "RX chan q not found");
+	IIO_ENSURE(get_ad9371_stream_ch(ctx, TX, tx, 0, 0, &tx0_i) && "TX chan i not found");
+	IIO_ENSURE(get_ad9371_stream_ch(ctx, TX, tx, 1, 0, &tx0_q) && "TX chan q not found");
 
 	printf("* Enabling IIO streaming channels\n");
 	iio_channel_enable(rx0_i);
@@ -288,7 +286,7 @@ int main (int argc, char **argv)
 		p_end = iio_buffer_end(txbuf);
 		for (p_dat = iio_buffer_first(txbuf, tx0_i); p_dat < p_end; p_dat += p_inc) {
 			// Example: fill with zeros
-			// 14-bit sample needs to be MSB alligned so shift by 2
+			// 14-bit sample needs to be MSB aligned so shift by 2
 			// https://wiki.analog.com/resources/eval/user-guides/ad-fmcomms2-ebz/software/basic_iq_datafiles#binary_format
 			((int16_t*)p_dat)[0] = 0 << 2; // Real (I)
 			((int16_t*)p_dat)[1] = 0 << 2; // Imag (Q)

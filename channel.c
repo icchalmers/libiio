@@ -56,6 +56,9 @@ static const char * const iio_chan_type_name_spec[] = {
 	[IIO_COUNT] = "count",
 	[IIO_INDEX] = "index",
 	[IIO_GRAVITY] = "gravity",
+	[IIO_POSITIONRELATIVE] = "positionrelative",
+	[IIO_PHASE] = "phase",
+	[IIO_MASSCONCENTRATION] = "massconcentration",
 };
 
 static const char * const modifier_names[] = {
@@ -79,6 +82,7 @@ static const char * const modifier_names[] = {
 	[IIO_MOD_LIGHT_GREEN] = "green",
 	[IIO_MOD_LIGHT_BLUE] = "blue",
 	[IIO_MOD_LIGHT_UV] = "uv",
+	[IIO_MOD_LIGHT_DUV] = "duv",
 	[IIO_MOD_QUATERNION] = "quaternion",
 	[IIO_MOD_TEMP_AMBIENT] = "ambient",
 	[IIO_MOD_TEMP_OBJECT] = "object",
@@ -94,7 +98,13 @@ static const char * const modifier_names[] = {
 	[IIO_MOD_I] = "i",
 	[IIO_MOD_Q] = "q",
 	[IIO_MOD_CO2] = "co2",
+	[IIO_MOD_ETHANOL] = "ethanol",
+	[IIO_MOD_H2] = "h2",
 	[IIO_MOD_VOC] = "voc",
+	[IIO_MOD_PM1] = "pm1",
+	[IIO_MOD_PM2P5] = "pm2p5",
+	[IIO_MOD_PM4] = "pm4",
+	[IIO_MOD_PM10] = "pm10",
 };
 
 /*
@@ -140,8 +150,9 @@ void iio_channel_init_finalize(struct iio_channel *chn)
 		len = strlen(iio_chan_type_name_spec[i]);
 		if (strncmp(iio_chan_type_name_spec[i], chn->id, len) != 0)
 			continue;
-		/* Type must be followed by either a '_' or a digit */
-		if (chn->id[len] != '_' && (chn->id[len] < '0' || chn->id[len] > '9'))
+		/* Type must be followed by one of a '\0', a '_', or a digit */
+		if (chn->id[len] != '\0' && chn->id[len] != '_' &&
+				(chn->id[len] < '0' || chn->id[len] > '9'))
 			continue;
 
 		chn->type = (enum iio_chan_type) i;
@@ -168,20 +179,28 @@ void iio_channel_init_finalize(struct iio_channel *chn)
 static char *get_attr_xml(struct iio_channel_attr *attr, size_t *length)
 {
 	char *str;
-	size_t len = strlen(attr->name) + sizeof("<attribute name=\"\" />");
-	if (attr->filename)
-		len += strlen(attr->filename) + sizeof("filename=\"\"");
+	size_t len;
 
+	len = strnlen(attr->name, MAX_ATTR_NAME);
+	len += sizeof("<attribute name=\"\" />") - 1;
+
+	if (attr->filename) {
+		len += strnlen(attr->filename, NAME_MAX);
+		len += sizeof(" filename=\"\"") - 1;
+	}
+
+	*length = len; /* just the chars */
+	len++;         /* room for terminating NULL */
 	str = malloc(len);
 	if (!str)
 		return NULL;
 
-	*length = len - 1; /* Skip the \0 */
 	if (attr->filename)
 		iio_snprintf(str, len, "<attribute name=\"%s\" filename=\"%s\" />",
 				attr->name, attr->filename);
 	else
 		iio_snprintf(str, len, "<attribute name=\"%s\" />", attr->name);
+
 	return str;
 }
 
@@ -215,12 +234,18 @@ static char * get_scan_element(const struct iio_channel *chn, size_t *length)
 /* Returns a string containing the XML representation of this channel */
 char * iio_channel_get_xml(const struct iio_channel *chn, size_t *length)
 {
-	size_t len = sizeof("<channel id=\"\" name=\"\" "
-			"type=\"output\" ></channel>")
-		+ strlen(chn->id) + (chn->name ? strlen(chn->name) : 0);
-	char *ptr, *str, **attrs, *scan_element = NULL;
+	ssize_t len;
+	char *ptr, *eptr, *str, **attrs, *scan_element = NULL;
 	size_t *attrs_len, scan_element_len = 0;
 	unsigned int i;
+
+	len = sizeof("<channel id=\"\" type=\"\" ></channel>") - 1;
+	len += strnlen(chn->id, MAX_CHN_ID);
+	len += (chn->is_output ? sizeof("output") : sizeof("input")) - 1;
+	if (chn->name) {
+		len += sizeof(" name=\"\"") - 1;
+		len += strnlen(chn->name, MAX_CHN_NAME);
+	}
 
 	if (chn->is_scan_element) {
 		scan_element = get_scan_element(chn, &scan_element_len);
@@ -246,29 +271,40 @@ char * iio_channel_get_xml(const struct iio_channel *chn, size_t *length)
 		len += attrs_len[i];
 	}
 
+	len++;  /* room for terminating NULL */
 	str = malloc(len);
 	if (!str)
 		goto err_free_attrs;
+	ptr = str;
+	eptr = str + len;
 
-	iio_snprintf(str, len, "<channel id=\"%s\"", chn->id);
-	ptr = strrchr(str, '\0');
-
-	if (chn->name) {
-		sprintf(ptr, " name=\"%s\"", chn->name);
-		ptr = strrchr(ptr, '\0');
+	if (len > 0) {
+		ptr += iio_snprintf(str, len, "<channel id=\"%s\"", chn->id);
+		len = eptr - ptr;
 	}
 
-	sprintf(ptr, " type=\"%s\" >", chn->is_output ? "output" : "input");
-	ptr = strrchr(ptr, '\0');
+	if (chn->name && len > 0) {
+		ptr += iio_snprintf(ptr, len, " name=\"%s\"", chn->name);
+		len = eptr - ptr;
+	}
 
-	if (chn->is_scan_element) {
-		strcpy(ptr, scan_element);
+	if (len > 0) {
+		ptr += iio_snprintf(ptr, len, " type=\"%s\" >", chn->is_output ? "output" : "input");
+		len = eptr - ptr;
+	}
+
+	if (chn->is_scan_element && len > (ssize_t) scan_element_len) {
+		memcpy(ptr, scan_element, scan_element_len); /* Flawfinder: ignore */
 		ptr += scan_element_len;
+		len -= scan_element_len;
 	}
 
 	for (i = 0; i < chn->nb_attrs; i++) {
-		strcpy(ptr, attrs[i]);
-		ptr += attrs_len[i];
+		if (len > (ssize_t) attrs_len[i]) {
+			memcpy(ptr, attrs[i], attrs_len[i]); /* Flawfinder: ignore */
+			ptr += attrs_len[i];
+			len -= attrs_len[i];
+		}
 		free(attrs[i]);
 	}
 
@@ -276,8 +312,20 @@ char * iio_channel_get_xml(const struct iio_channel *chn, size_t *length)
 	free(attrs);
 	free(attrs_len);
 
-	strcpy(ptr, "</channel>");
-	*length = ptr - str + sizeof("</channel>") - 1;
+	if (len > 0) {
+		ptr += iio_strlcpy(ptr, "</channel>", len);
+		len -= sizeof("</channel>") -1;
+	}
+
+	*length = ptr - str;
+
+	/* NULL char should be left, and that is it */
+	if (len != 1) {
+		IIO_ERROR("Internal libIIO error: iio_channel_get_xml str length issue\n");
+		free(str);
+		return NULL;
+	}
+
 	return str;
 
 err_free_attrs:
@@ -662,8 +710,9 @@ int iio_channel_attr_read_longlong(const struct iio_channel *chn,
 	if (ret < 0)
 		return (int) ret;
 
+	errno = 0;
 	value = strtoll(buf, &end, 0);
-	if (end == buf)
+	if (end == buf || errno == ERANGE)
 		return -EINVAL;
 	*val = value;
 	return 0;
@@ -695,33 +744,33 @@ int iio_channel_attr_read_double(const struct iio_channel *chn,
 int iio_channel_attr_write_longlong(const struct iio_channel *chn,
 		const char *attr, long long val)
 {
-	ssize_t ret;
+	int ret;
 	char buf[1024];
 	iio_snprintf(buf, sizeof(buf), "%lld", val);
-	ret = iio_channel_attr_write(chn, attr, buf);
+	ret = (int) iio_channel_attr_write(chn, attr, buf);
 	return ret < 0 ? ret : 0;
 }
 
 int iio_channel_attr_write_double(const struct iio_channel *chn,
 		const char *attr, double val)
 {
-	ssize_t ret;
+	int ret;
 	char buf[1024];
 
-	ret = (ssize_t) write_double(buf, sizeof(buf), val);
+	ret = write_double(buf, sizeof(buf), val);
 	if (!ret)
-		ret = iio_channel_attr_write(chn, attr, buf);
+		ret = (int) iio_channel_attr_write(chn, attr, buf);
 	return ret < 0 ? ret : 0;
 }
 
 int iio_channel_attr_write_bool(const struct iio_channel *chn,
 		const char *attr, bool val)
 {
-	ssize_t ret;
+	int ret;
 	if (val)
-		ret = iio_channel_attr_write_raw(chn, attr, "1", 2);
+		ret = (int) iio_channel_attr_write_raw(chn, attr, "1", 2);
 	else
-		ret = iio_channel_attr_write_raw(chn, attr, "0", 2);
+		ret = (int) iio_channel_attr_write_raw(chn, attr, "0", 2);
 	return ret < 0 ? ret : 0;
 }
 

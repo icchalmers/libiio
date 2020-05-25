@@ -45,52 +45,59 @@
 #define COLOR_END "\e[0m"
 #endif
 
+/* Many of these debug printf include a Flawfinder: ignore, this is because,
+ * according to https://cwe.mitre.org/data/definitions/134.html which describes
+ * functions that accepts a format string as an argument, but the format
+ * string originates from an external source. All the IIO_DEBUG, IIO_INFO,
+ * IIO_WARNING, and IIO_ERRRO functions are called internally from the
+ * library, have fixed format strings and can not be modified externally.
+ */
 #if (LOG_LEVEL >= Debug_L)
 # ifdef COLOR_DEBUG
-#  define DEBUG(str, ...) \
-    fprintf(stdout, COLOR_DEBUG "DEBUG: " str COLOR_END, ##__VA_ARGS__)
+#  define IIO_DEBUG(str, ...) \
+    fprintf(stdout, COLOR_DEBUG "DEBUG: " str COLOR_END, ##__VA_ARGS__) /* Flawfinder: ignore */
 # else
-#  define DEBUG(...) \
-    fprintf(stdout, "DEBUG: " __VA_ARGS__)
+#  define IIO_DEBUG(...) \
+    fprintf(stdout, "DEBUG: " __VA_ARGS__) /* Flawfinder: ignore */
 # endif
 #else
-#define DEBUG(...) do { } while (0)
+#define IIO_DEBUG(...) do { } while (0)
 #endif
 
 #if (LOG_LEVEL >= Info_L)
 # ifdef COLOR_INFO
-#  define INFO(str, ...) \
-    fprintf(stdout, COLOR_INFO str COLOR_END, ##__VA_ARGS__)
+#  define IIO_INFO(str, ...) \
+    fprintf(stdout, COLOR_INFO str COLOR_END, ##__VA_ARGS__) /* Flawfinder: ignore */
 # else
-#  define INFO(...) \
-    fprintf(stdout, __VA_ARGS__)
+#  define IIO_INFO(...) \
+    fprintf(stdout, __VA_ARGS__) /* Flawfinder: ignore */
 # endif
 #else
-#define INFO(...) do { } while (0)
+#define IIO_INFO(...) do { } while (0)
 #endif
 
 #if (LOG_LEVEL >= Warning_L)
 # ifdef COLOR_WARNING
-#  define WARNING(str, ...) \
-    fprintf(stderr, COLOR_WARNING "WARNING: " str COLOR_END, ##__VA_ARGS__)
+#  define IIO_WARNING(str, ...) \
+    fprintf(stderr, COLOR_WARNING "WARNING: " str COLOR_END, ##__VA_ARGS__) /* Flawfinder: ignore */
 # else
-#  define WARNING(...) \
-    fprintf(stderr, "WARNING: " __VA_ARGS__)
+#  define IIO_WARNING(...) \
+    fprintf(stderr, "WARNING: " __VA_ARGS__) /* Flawfinder: ignore */
 # endif
 #else
-#define WARNING(...) do { } while (0)
+#define IIO_WARNING(...) do { } while (0)
 #endif
 
 #if (LOG_LEVEL >= Error_L)
 # ifdef COLOR_ERROR
-#  define ERROR(str, ...) \
-    fprintf(stderr, COLOR_ERROR "ERROR: " str COLOR_END, ##__VA_ARGS__)
+#  define IIO_ERROR(str, ...) \
+    fprintf(stderr, COLOR_ERROR "ERROR: " str COLOR_END, ##__VA_ARGS__) /* Flawfinder: ignore */
 # else
-#  define ERROR(...) \
-    fprintf(stderr, "ERROR: " __VA_ARGS__)
+#  define IIO_ERROR(...) \
+    fprintf(stderr, "ERROR: " __VA_ARGS__) /* Flawfinder: ignore */
 # endif
 #else
-#define ERROR(...) do { } while (0)
+#define IIO_ERROR(...) do { } while (0)
 #endif
 
 #endif

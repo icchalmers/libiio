@@ -72,13 +72,17 @@ namespace iio
 
             buf = iio_device_create_buffer(dev.dev, samples_count, circular);
             if (buf == IntPtr.Zero)
+            {
                 throw new Exception("Unable to create buffer");
+            }
         }
 
         ~IOBuffer()
         {
             if (buf != IntPtr.Zero)
+            {
                 Dispose(false);
+            }
         }
 
         /// <summary>Fetch a new set of samples from the hardware.</summary>
@@ -87,7 +91,9 @@ namespace iio
         {
             int err = iio_buffer_refill(this.buf);
             if (err < 0)
+            {
                 throw new Exception("Unable to refill buffer: err=" + err);
+            }
         }
 
         /// <summary>Submit the samples contained in this buffer to the hardware.</summary>
@@ -95,14 +101,19 @@ namespace iio
         public void push(uint samples_count)
         {
             if (circular && circular_buffer_pushed)
+            {
                 throw new Exception("Circular buffer already pushed\n");
+            }
 
             int err = iio_buffer_push_partial(this.buf, samples_count);
             if (err < 0)
+            {
                 throw new Exception("Unable to push buffer: err=" + err);
+            }
             circular_buffer_pushed = true;
         }
 
+        /// <summary>Submit all the samples contained in this buffer to the hardware.</summary>
         public void push()
         {
             push(this.samples_count);
@@ -123,7 +134,9 @@ namespace iio
             if (buf != IntPtr.Zero)
             {
                 if (clean)
+                {
                     GC.SuppressFinalize(this);
+                }
                 iio_buffer_destroy(buf);
                 buf = IntPtr.Zero;
             }
@@ -134,10 +147,24 @@ namespace iio
         /// <remarks>The number of samples written will not exceed the size of the buffer.</remarks>
         public void fill(byte[] array)
         {
-            int length = (int) iio_buffer_end(buf) - (int) iio_buffer_start(buf);
+            long length = (long) iio_buffer_end(buf) - (long) iio_buffer_start(buf);
             if (length > array.Length)
+            {
                 length = array.Length;
-            Marshal.Copy(array, 0, iio_buffer_start(buf), length);
+            }
+            Marshal.Copy(array, 0, iio_buffer_start(buf), (int)length);
+        }
+
+        /// <summary>Extract the samples from the <see cref="iio.IOBuffer"/> object.</summary>
+        /// <param name="array">A <c>byte</c> array containing the extracted samples.</param>
+        public void read(byte[] array)
+        {
+            long length = (long) iio_buffer_end(buf) - (long) iio_buffer_start(buf);
+            if (length > array.Length)
+            {
+                length = array.Length;
+            }
+            Marshal.Copy(iio_buffer_start(buf), array, 0, (int)length);
         }
     }
 }
